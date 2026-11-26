@@ -1,0 +1,2994 @@
+---
+title: "Trabajo 2 - Tres series: escala, integración e identificación de modelos ARIMA"
+subtitle: "Series de Tiempo - Universidad Nacional de Colombia, sede Medellín"
+author: "Juan Manuel Díaz Larrea, Sofía Valentina López Ramírez y Angie Melissa Montoya Urrego"
+date: "2026-II"
+lang: es
+format:
+  html:
+    toc: true
+    number-sections: true
+    code-fold: false
+    html-math-method: katex
+    embed-resources: true
+---
+
+# Introducción
+
+El presente trabajo desarrolla el análisis de tres series de tiempo univariadas simuladas, asignadas al equipo ST5NEW, en el marco de la asignatura Series de Tiempo de la Universidad Nacional de Colombia, sede Medellín.
+
+El propósito es estudiar la escala de las series, determinar su orden de integración, identificar posibles estructuras autorregresivas y de promedios móviles, estimar modelos ARIMA y validar su adecuación estadística.
+
+Las tres series se analizan utilizando la totalidad de las observaciones entregadas por el profesor. No se modifican, eliminan ni imputan datos.
+
+# Las tres series y su contexto
+
+## Fichas descriptivas de las series
+
+Para cada serie se verifica su nombre, unidad de medida, frecuencia, periodo de observación, número de datos, valor mínimo, máximo y media.
+
+Las estadísticas se calculan directamente a partir de los archivos CSV originales mediante funciones desarrolladas en R.
+
+```{r}
+# Identificar la raiz del proyecto
+
+candidatos <- c(".", "..")
+
+rutas_validas <- candidatos[
+  vapply(
+    candidatos,
+    function(x) file.exists(
+      file.path(x, "R", "00-lectura.R")
+    ),
+    logical(1)
+  )
+]
+
+if (length(rutas_validas) == 0) {
+  stop("No se encuentra la carpeta principal del proyecto.")
+}
+
+raiz_proyecto <- normalizePath(
+  rutas_validas[1],
+  winslash = "/"
+)
+
+# Cargar funciones propias
+
+source(file.path(raiz_proyecto, "R", "00-lectura.R"))
+source(file.path(raiz_proyecto, "R", "01-transformacion.R"))
+
+# Leer serie 1
+
+serie1 <- leer_serie(
+  ruta = file.path(raiz_proyecto, "datos", "ST5NEW-serie-1.csv"),
+  nombre = "Anomalia de temperatura del agua cruda",
+  unidad = "Grados Celsius",
+  frecuencia = "semanal",
+  T_esperado = 208
+)
+
+# Leer serie 2
+
+serie2 <- leer_serie(
+  ruta = file.path(raiz_proyecto, "datos", "ST5NEW-serie-2.csv"),
+  nombre = "Nivel medio anual de la laguna",
+  unidad = "Metros sobre el nivel del mar",
+  frecuencia = "anual",
+  T_esperado = 88
+)
+
+# Leer serie 3
+
+serie3 <- leer_serie(
+  ruta = file.path(raiz_proyecto, "datos", "ST5NEW-serie-3.csv"),
+  nombre = "Reclamos por facturacion",
+  unidad = "Reclamos",
+  frecuencia = "mensual",
+  T_esperado = 144
+)
+
+# Consolidar fichas
+
+fichas <- rbind(
+  serie1$ficha,
+  serie2$ficha,
+  serie3$ficha
+)
+
+# Tabla descriptiva
+
+tabla_fichas <- data.frame(
+  Serie = c("Serie 1", "Serie 2", "Serie 3"),
+  Nombre = fichas$nombre,
+  Unidad = fichas$unidad,
+  Frecuencia = fichas$frecuencia,
+  `Fecha inicial` = format(fichas$fecha_inicial, "%Y-%m-%d"),
+  `Fecha final` = format(fichas$fecha_final, "%Y-%m-%d"),
+  T = fichas$T,
+  Minimo = sprintf("%.2f", fichas$minimo),
+  Maximo = sprintf("%.2f", fichas$maximo),
+  Media = sprintf("%.4f", fichas$media),
+  check.names = FALSE
+)
+
+knitr::kable(
+  tabla_fichas,
+  caption = "Fichas descriptivas de las tres series del equipo ST5NEW."
+)
+```
+
+La tabla anterior permite verificar las características de cada serie mediante código reproducible, en lugar de presentar estadísticas calculadas manualmente.
+
+## Interpretación de las series según su contexto
+
+### Serie 1. Anomalía de la temperatura del agua cruda
+
+La serie mide la diferencia, en grados Celsius, entre la temperatura promedio semanal del agua cruda en la bocatoma y el promedio de la misma semana entre 2011 y 2020. Su evolución creciente es relevante porque, cuando la diferencia supera los 2,5 °C, la dosis de carbón activado debe duplicarse, y este insumo requiere cuatro semanas de anticipación para su adquisición.
+
+### Serie 2. Nivel medio anual de la laguna de Celeste
+
+La serie representa el nivel medio anual del agua de la laguna, expresado en metros sobre el nivel del mar. Su comportamiento descendente en los últimos años es importante porque la bocatoma deja de funcionar cuando el nivel baja de 2.834,0 metros, mientras que su reubicación requiere tres años entre estudios, licencias y obras.
+
+### Serie 3. Reclamos por facturación recibidos en el mes
+
+La serie representa la cantidad mensual de reclamos presentados por los usuarios debido a cobros, lecturas o tarifas. Su crecimiento, especialmente en los últimos periodos, es relevante para planificar la capacidad de atención, considerando que cada agente puede resolver hasta 150 reclamos mensuales y debe contratarse con un mes de anticipación.
+
+# Escala y estabilización de la varianza
+
+## Análisis gráfico y relación entre escala y dispersión
+
+### Gráficos temporales
+
+En primer lugar, se analiza gráficamente el comportamiento temporal de las tres series para identificar posibles cambios en su nivel y en su dispersión. Posteriormente, se estudia la relación entre el nivel medio y la variabilidad de las primeras diferencias mediante ocho bloques consecutivos de igual tamaño.
+
+Para cada bloque se calcula la media de la serie y la desviación estándar muestral de sus primeras diferencias. La relación entre estas dos cantidades permite explorar si la dispersión de los cambios depende del nivel de la serie.
+
+Se utiliza la desviación estándar de las primeras diferencias y no la desviación estándar de los niveles, porque el nivel puede presentar tendencias y cambios persistentes. En consecuencia, su dispersión puede mezclar movimientos de largo plazo con variaciones de corto plazo. Las primeras diferencias permiten estudiar más directamente la variabilidad de los cambios entre períodos consecutivos.
+
+#### Preparación y lectura de los datos
+
+El siguiente código identifica la raíz del proyecto y carga las funciones de lectura y transformación desarrolladas por el equipo.
+
+```{r configuracion-proyecto, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  warning = FALSE,
+  message = FALSE
+)
+
+# Buscar la raíz del proyecto.
+buscar_raiz <- function(inicial) {
+
+  candidato <- normalizePath(
+    inicial,
+    winslash = "/",
+    mustWork = TRUE
+  )
+
+  for (i in 0:5) {
+
+    scripts_ok <-
+      file.exists(file.path(candidato, "R", "00-lectura.R")) ||
+      file.exists(file.path(candidato, "00-lectura.R"))
+
+    datos_ok <- all(vapply(
+      paste0("ST5NEW-serie-", 1:3, ".csv"),
+      function(nombre) {
+        file.exists(file.path(candidato, "datos", nombre)) ||
+          file.exists(file.path(candidato, nombre))
+      },
+      logical(1)
+    ))
+
+    if (scripts_ok && datos_ok) {
+      return(candidato)
+    }
+
+    padre <- dirname(candidato)
+
+    if (identical(padre, candidato)) {
+      break
+    }
+
+    candidato <- padre
+  }
+
+  stop(
+    "No se encontró la raíz del proyecto. ",
+    "Verifica la ubicación de los scripts R y de los archivos CSV."
+  )
+}
+
+raiz_proyecto <- buscar_raiz(getwd())
+
+# Establecer la raíz como directorio de trabajo
+# para los siguientes bloques.
+knitr::opts_knit$set(root.dir = raiz_proyecto)
+```
+
+```{r lectura-series, include=FALSE}
+# Identificar las carpetas.
+carpeta_R <- if (dir.exists("R")) "R" else "."
+carpeta_datos <- if (dir.exists("datos")) "datos" else "."
+
+# Verificar que existan los scripts.
+if (!file.exists(file.path(carpeta_R, "00-lectura.R"))) {
+  stop("No se encuentra el archivo 00-lectura.R.")
+}
+
+if (!file.exists(file.path(carpeta_R, "01-transformacion.R"))) {
+  stop("No se encuentra el archivo 01-transformacion.R.")
+}
+
+# Cargar las funciones del equipo.
+source(file.path(carpeta_R, "00-lectura.R"))
+source(file.path(carpeta_R, "01-transformacion.R"))
+
+# Crear la carpeta de figuras.
+if (!dir.exists("figs")) {
+  dir.create("figs", recursive = TRUE)
+}
+
+# Leer la serie 1.
+lectura_1 <- leer_serie(
+  ruta = file.path(carpeta_datos, "ST5NEW-serie-1.csv"),
+  nombre = "Anomalía de la temperatura del agua cruda en la bocatoma",
+  unidad = "grados Celsius",
+  frecuencia = "semanal",
+  T_esperado = 208
+)
+
+# Leer la serie 2.
+lectura_2 <- leer_serie(
+  ruta = file.path(carpeta_datos, "ST5NEW-serie-2.csv"),
+  nombre = "Nivel medio anual de la laguna de Celeste",
+  unidad = "metros sobre el nivel del mar",
+  frecuencia = "anual",
+  T_esperado = 88
+)
+
+# Leer la serie 3.
+lectura_3 <- leer_serie(
+  ruta = file.path(carpeta_datos, "ST5NEW-serie-3.csv"),
+  nombre = "Reclamos por facturación recibidos en el mes",
+  unidad = "reclamos",
+  frecuencia = "mensual",
+  T_esperado = 144
+)
+
+# Organizar las series.
+series <- list(
+  lectura_1$datos,
+  lectura_2$datos,
+  lectura_3$datos
+)
+
+# Nombres de las series.
+nombres <- c(
+  "Anomalía de la temperatura del agua cruda en la bocatoma",
+  "Nivel medio anual de la laguna de Celeste",
+  "Reclamos por facturación recibidos en el mes"
+)
+
+# Unidades de medida.
+unidades <- c(
+  "grados Celsius",
+  "metros sobre el nivel del mar",
+  "reclamos"
+)
+```
+
+#### Gráficos de las series en el tiempo
+
+Se construyen los gráficos temporales de las tres series. Cada gráfico contiene el título, los ejes con sus respectivas unidades y las fechas. El número de observaciones se presenta en el caption de cada figura.
+
+```{r generar-graficos-temporales, include=FALSE}
+grafico_temporal_quarto <- function(datos, nombre, unidad, archivo) {
+
+  grDevices::png(
+    filename = archivo,
+    width = 1600,
+    height = 900,
+    res = 140
+  )
+
+  on.exit(grDevices::dev.off(), add = TRUE)
+
+  op <- graphics::par(
+    mar = c(7, 5, 4, 2) + 0.1
+  )
+
+  graphics::plot(
+    datos$fecha,
+    datos$valor,
+    type = "l",
+    lwd = 1.5,
+    main = nombre,
+    xlab = "Fecha",
+    ylab = paste0("Valor (", unidad, ")"),
+    xaxt = "n"
+  )
+
+  fechas <- pretty(
+    as.numeric(datos$fecha),
+    n = 8
+  )
+
+  graphics::axis(
+    side = 1,
+    at = fechas,
+    labels = format(
+      as.Date(fechas, origin = "1970-01-01"),
+      "%Y-%m"
+    ),
+    las = 2,
+    cex.axis = 0.8
+  )
+
+  graphics::par(op)
+}
+
+for (i in seq_along(series)) {
+
+  grafico_temporal_quarto(
+    datos = series[[i]],
+    nombre = nombres[i],
+    unidad = unidades[i],
+    archivo = file.path(
+      "figs",
+      paste0("serie_temporal_", i, ".png")
+    )
+  )
+
+}
+```
+
+**Serie 1. Anomalía de la temperatura del agua cruda**
+
+```{r figura-temporal-serie-1, echo=FALSE, fig.cap="Evolución temporal de la anomalía semanal de temperatura (n = 208)."}
+knitr::include_graphics(
+  file.path(raiz_proyecto, "figs", "serie_temporal_1.png")
+)
+```
+
+**Serie 2. Nivel medio anual de la laguna de Celeste**
+
+```{r figura-temporal-serie-2, echo=FALSE, fig.cap="Evolución temporal del nivel medio anual de la laguna (n = 88)."}
+knitr::include_graphics(
+  file.path(raiz_proyecto, "figs", "serie_temporal_2.png")
+)
+```
+
+**Serie 3. Reclamos por facturación**
+
+```{r figura-temporal-serie-3, echo=FALSE, fig.cap="Evolución temporal de los reclamos mensuales por facturación (n = 144)."}
+knitr::include_graphics(
+  file.path(raiz_proyecto, "figs", "serie_temporal_3.png")
+)
+```
+
+#### Cálculo de las estadísticas por bloques
+
+Para estudiar la relación entre nivel y dispersión, se divide cada serie en ocho bloques consecutivos de igual tamaño.
+
+Para cada bloque se calcula la media:
+
+$$
+\bar Z_i=\frac{1}{m_i}\sum_{t\in i}Z_t
+$$
+
+y la desviación estándar muestral de sus primeras diferencias:
+
+$$
+s_{\Delta,i}
+=
+\sqrt{
+\frac{1}{m_i-2}
+\sum_{t=2}^{m_i}
+\left(\Delta Z_{it}-\overline{\Delta Z}_i\right)^2
+}.
+$$
+
+Aquí, $m_i$ representa el número de observaciones del bloque y $\Delta Z_{it}$ corresponde a la primera diferencia dentro de ese bloque.
+
+```{r calculo-bloques}
+# Aplicar bloques_escala() a las tres series.
+resultados_bloques <- lapply(
+  series,
+  function(datos) {
+    bloques_escala(
+      z = datos$valor,
+      n_bloques = 8
+    )
+  }
+)
+
+# Construir una tabla con las fechas de cada bloque.
+crear_tabla_bloques <- function(datos, resultado, numero_serie) {
+
+  n <- nrow(datos)
+  n_bloques <- nrow(resultado$tabla)
+  tamano <- n / n_bloques
+
+  inicios <- seq(
+    from = 1,
+    by = tamano,
+    length.out = n_bloques
+  )
+
+  finales <- inicios + tamano - 1
+
+  data.frame(
+    serie = numero_serie,
+    bloque = seq_len(n_bloques),
+    fecha_inicial = as.character(datos$fecha[inicios]),
+    fecha_final = as.character(datos$fecha[finales]),
+    observaciones = tamano,
+    media = resultado$tabla$media,
+    sd_primera_diferencia =
+      resultado$tabla$sd_primera_diferencia
+  )
+}
+
+# Unir las tablas de las tres series.
+tabla_bloques <- do.call(
+  rbind,
+  lapply(seq_along(series), function(i) {
+
+    crear_tabla_bloques(
+      datos = series[[i]],
+      resultado = resultados_bloques[[i]],
+      numero_serie = i
+    )
+
+  })
+)
+
+knitr::kable(
+  tabla_bloques,
+  digits = 4,
+  caption = "Medias y desviaciones estándar de las primeras diferencias por bloque."
+)
+```
+
+#### Gráficos de relación entre nivel y dispersión
+
+Cuando las medias de todos los bloques son positivas, se estima la relación:
+
+$$
+\log(s_{\Delta,i})
+=
+\alpha+\beta\log(\bar Z_i)+\varepsilon_i.
+$$
+
+La pendiente permite obtener la aproximación:
+
+$$
+\hat{\lambda}=1-\hat{\beta}.
+$$
+
+Si existen medias nulas o negativas, no es posible aplicar el logaritmo al nivel medio. En ese caso se presenta un ajuste alternativo, manteniendo las medias en su escala original. Su pendiente no se interpreta como una estimación de $\lambda$.
+
+```{r generar-graficos-escala, include=FALSE}
+grafico_escala_quarto <- function(resultado, nombre, unidad, archivo) {
+
+  tabla <- resultado$tabla
+
+  grDevices::png(
+    filename = archivo,
+    width = 1600,
+    height = 1000,
+    res = 140
+  )
+
+  on.exit(grDevices::dev.off(), add = TRUE)
+
+  if (resultado$log_log_aplicable) {
+
+    graphics::plot(
+      tabla$media,
+      tabla$sd_primera_diferencia,
+      log = "xy",
+      pch = 19,
+      xlab = paste0("Media por bloque (", unidad, ")"),
+      ylab = paste0(
+        "Desviación estándar de la primera diferencia (",
+        unidad, ")"
+      ),
+      main = paste("Relación escala-dispersión:", nombre)
+    )
+
+    x_ajuste <- exp(seq(
+      log(min(tabla$media)),
+      log(max(tabla$media)),
+      length.out = 100
+    ))
+
+    y_ajuste <- exp(coef(resultado$modelo)[1]) *
+      x_ajuste^coef(resultado$modelo)[2]
+
+    texto_lambda <- paste(
+      "Lambda aproximado:",
+      round(resultado$lambda_aproximado, 4)
+    )
+
+  } else {
+
+    graphics::plot(
+      tabla$media,
+      tabla$sd_primera_diferencia,
+      log = "y",
+      pch = 19,
+      xlab = paste0(
+        "Media por bloque (",
+        unidad,
+        "; escala original)"
+      ),
+      ylab = paste0(
+        "Desviación estándar de la primera diferencia (",
+        unidad, ")"
+      ),
+      main = paste("Relación escala-dispersión:", nombre)
+    )
+
+    x_ajuste <- seq(
+      min(tabla$media),
+      max(tabla$media),
+      length.out = 100
+    )
+
+    y_ajuste <- exp(
+      coef(resultado$modelo)[1] +
+        coef(resultado$modelo)[2] * x_ajuste
+    )
+
+    texto_lambda <- "Lambda no estimable mediante pendiente log-log"
+  }
+
+  graphics::lines(
+    x_ajuste,
+    y_ajuste,
+    lwd = 2,
+    lty = 2
+  )
+
+  graphics::legend(
+    "topleft",
+    legend = c(
+      paste("Pendiente:", round(resultado$pendiente, 4)),
+      texto_lambda,
+      paste("R2:", round(resultado$r2, 4))
+    ),
+    bty = "n"
+  )
+}
+
+# Generar los tres gráficos.
+for (i in seq_along(series)) {
+
+  grafico_escala_quarto(
+    resultado = resultados_bloques[[i]],
+    nombre = nombres[i],
+    unidad = unidades[i],
+    archivo = file.path(
+      "figs",
+      paste0("escala_varianza_", i, ".png")
+    )
+  )
+
+}
+
+# Resumen de los resultados.
+resumen_escala <- data.frame(
+  Serie = 1:3,
+  Observaciones = sapply(series, nrow),
+  Bloques = 8,
+  Pendiente = sapply(
+    resultados_bloques,
+    function(x) x$pendiente
+  ),
+  Lambda_aproximado = sapply(
+    resultados_bloques,
+    function(x) x$lambda_aproximado
+  ),
+  R2 = sapply(
+    resultados_bloques,
+    function(x) x$r2
+  ),
+  Ajuste_log_log = sapply(
+    resultados_bloques,
+    function(x) x$log_log_aplicable
+  )
+)
+```
+
+**Serie 1. Relación entre nivel y dispersión**
+
+```{r figura-escala-serie-1, echo=FALSE, fig.cap="Desviación estándar de las primeras diferencias frente al nivel medio por bloques: serie 1."}
+knitr::include_graphics(
+  file.path(raiz_proyecto, "figs", "escala_varianza_1.png")
+)
+```
+
+**Serie 2. Relación entre nivel y dispersión**
+
+```{r figura-escala-serie-2, echo=FALSE, fig.cap="Desviación estándar de las primeras diferencias frente al nivel medio por bloques: serie 2."}
+knitr::include_graphics(
+  file.path(raiz_proyecto, "figs", "escala_varianza_2.png")
+)
+```
+
+**Serie 3. Relación entre nivel y dispersión**
+
+```{r figura-escala-serie-3, echo=FALSE, fig.cap="Desviación estándar de las primeras diferencias frente al nivel medio por bloques: serie 3."}
+knitr::include_graphics(
+  file.path(raiz_proyecto, "figs", "escala_varianza_3.png")
+)
+```
+
+Los resultados de las regresiones por bloques se resumen a continuación.
+
+```{r tabla-resumen-escala}
+knitr::kable(
+  resumen_escala,
+  digits = 4,
+  caption = "Resumen de la relación entre nivel y dispersión de las tres series."
+)
+```
+
+Para la primera serie, existen bloques con medias negativas. Por esta razón, no se puede realizar el ajuste log-log convencional. Se utiliza el ajuste alternativo con las medias en su escala original, pero su pendiente no permite estimar $\lambda$.
+
+En la segunda serie, aunque todas las medias de los bloques son positivas y es posible aplicar el ajuste log-log, debe considerarse el coeficiente de determinación. Un valor bajo indica que la pendiente no representa evidencia confiable de una relación entre nivel y dispersión.
+
+En la tercera serie, la pendiente permite explorar la relación entre el nivel medio y la variabilidad de los cambios. La aproximación obtenida para el parámetro de transformación es:
+
+$$
+\hat{\lambda}_{\text{bloques}}
+=
+1-\hat{\beta}.
+$$
+
+Este resultado tiene carácter exploratorio y debe complementarse con el perfil de log-verosimilitud de Box-Cox.
+
+## Perfil de log-verosimilitud de Box-Cox
+
+La transformación de Box y Cox se utiliza para estabilizar la varianza cuando la dispersión de una serie depende de su nivel. Su expresión es:
+
+$$
+g_\lambda(Z_t)=
+\begin{cases}
+\dfrac{Z_t^\lambda-1}{\lambda}, & \lambda\neq 0,\\[6pt]
+\log(Z_t), & \lambda=0.
+\end{cases}
+$$
+
+Algunos valores particulares del parámetro son:
+
+- $\lambda=1$: conserva la escala original, salvo una constante aditiva.
+- $\lambda=0$: corresponde al logaritmo natural.
+- $\lambda=0.5$: corresponde a una transformación de raíz cuadrada reescalada.
+
+Para seleccionar el parámetro se utiliza el perfil de log-verosimilitud de $\lambda$, incluyendo el jacobiano de la transformación. Este procedimiento permite comparar diferentes valores del parámetro considerando la escala transformada y la dependencia temporal de la serie.
+
+Para calcular los perfiles de las series positivas se utiliza un modelo AR(1) con constante y tendencia determinística, estimado mediante máxima verosimilitud. Esta especificación permite considerar una tendencia lineal y la dependencia temporal de corto plazo. La misma especificación se utiliza para comparar las transformaciones antes de determinar el orden de integración.
+
+### Serie 1. Anomalía de la temperatura del agua cruda
+
+La primera serie contiene valores negativos y nulos. La familia estándar de Box-Cox requiere que todas las observaciones sean estrictamente positivas, debido a que involucra potencias y logaritmos de los valores observados.
+
+Por lo tanto, no es posible aplicar directamente esta transformación a la serie 1. Tampoco se introduce un desplazamiento artificial de los datos, pues esto modificaría la escala original y podría afectar la interpretación del fenómeno.
+
+En consecuencia, se decide conservar la escala original:
+
+$$
+g(Z_t)=Z_t.
+$$
+
+### Serie 2. Nivel medio anual de la laguna de Celeste
+
+La segunda serie contiene únicamente valores positivos, por lo que es posible aplicar la familia de Box-Cox.
+
+Se calcula el perfil de log-verosimilitud utilizando un modelo AR(1) con constante y tendencia determinística. La grilla se amplía para examinar si existe un máximo interior y si el intervalo de confianza del 95 % queda contenido dentro del rango explorado.
+
+```{r perfil-boxcox-serie-2}
+perfil_s2 <- perfil_lambda(
+  z = series[[2]]$valor,
+  nombre = "Serie 2",
+  orden = c(1, 0, 0),
+  tipo_determinista = "constante_tendencia",
+  lambda_grid = seq(-10, 10, by = 0.05)
+)
+
+tabla_perfil_s2 <- data.frame(
+  lambda_hat = perfil_s2$lambda_hat,
+  IC95_inferior = perfil_s2$intervalo_95[1],
+  IC95_superior = perfil_s2$intervalo_95[2],
+  intervalo_abierto = perfil_s2$intervalo_abierto,
+  intervalo_valido = perfil_s2$intervalo_valido,
+  log_verosimilitud_maxima =
+    perfil_s2$log_verosimilitud_maxima,
+  ajustes_fallidos =
+    perfil_s2$cantidad_ajustes_fallidos,
+  modelo = perfil_s2$modelo
+)
+
+knitr::kable(
+  tabla_perfil_s2,
+  digits = 4,
+  caption = "Resultados del perfil Box-Cox para la serie 2."
+)
+```
+
+**Perfil de log-verosimilitud de la serie 2**
+
+```{r figura-perfil-serie-2, echo=FALSE, fig.cap="Perfil de log-verosimilitud de Box-Cox para el nivel medio anual de la laguna."}
+knitr::include_graphics(
+  file.path(raiz_proyecto, "figs", "perfil_lambda_serie_2.png")
+)
+```
+
+La estimación de $\lambda$ y su intervalo se reportan con los resultados del perfil calculado en R. Si el máximo aparece en uno de los extremos de la grilla, el intervalo debe considerarse abierto o truncado. En ese caso no se cuenta con un máximo interior ni con límites de confianza definitivos.
+
+Si el perfil no identifica un intervalo cerrado, se conserva provisionalmente $\lambda=1$, equivalente a mantener la escala original salvo por un desplazamiento constante. Esta decisión evita introducir una transformación adicional cuando el perfil no permite identificar con precisión un valor distinto.
+
+### Serie 3. Reclamos por facturación
+
+La tercera serie contiene únicamente valores positivos, por lo que puede utilizarse la familia de Box-Cox.
+
+Se calcula el perfil de log-verosimilitud utilizando un modelo AR(1) con constante y tendencia determinística, mediante máxima verosimilitud e incluyendo el jacobiano.
+
+```{r perfil-boxcox-serie-3}
+perfil_s3 <- perfil_lambda(
+  z = series[[3]]$valor,
+  nombre = "Serie 3",
+  orden = c(1, 0, 0),
+  tipo_determinista = "constante_tendencia",
+  lambda_grid = seq(-2, 2, by = 0.01)
+)
+
+tabla_perfil_s3 <- data.frame(
+  lambda_hat = perfil_s3$lambda_hat,
+  IC95_inferior = perfil_s3$intervalo_95[1],
+  IC95_superior = perfil_s3$intervalo_95[2],
+  intervalo_abierto = perfil_s3$intervalo_abierto,
+  intervalo_valido = perfil_s3$intervalo_valido,
+  log_verosimilitud_maxima =
+    perfil_s3$log_verosimilitud_maxima,
+  ajustes_fallidos =
+    perfil_s3$cantidad_ajustes_fallidos,
+  modelo = perfil_s3$modelo
+)
+
+knitr::kable(
+  tabla_perfil_s3,
+  digits = 4,
+  caption = "Resultados del perfil Box-Cox para la serie 3."
+)
+```
+
+**Perfil de log-verosimilitud de la serie 3**
+
+```{r figura-perfil-serie-3, echo=FALSE, fig.cap="Perfil de log-verosimilitud de Box-Cox para los reclamos mensuales por facturación."}
+knitr::include_graphics(
+  file.path(raiz_proyecto, "figs", "perfil_lambda_serie_3.png")
+)
+```
+
+### Selección de los valores de transformación
+
+Para seleccionar un valor interpretable se consideran los valores habituales de la familia de Box-Cox: $0$, $0.5$ y $1$. Se elige un valor que pertenezca al intervalo de confianza del 95 % y que esté próximo al máximo del perfil.
+
+```{r seleccion-lambda}
+# Función para elegir un valor redondeado dentro del intervalo.
+seleccionar_lambda <- function(perfil, candidatos = c(0, 0.5, 1)) {
+
+  if (
+    perfil$intervalo_valido &&
+    !perfil$intervalo_abierto &&
+    all(is.finite(perfil$intervalo_95))
+  ) {
+
+    validos <- candidatos[
+      candidatos >= perfil$intervalo_95[1] &
+        candidatos <= perfil$intervalo_95[2]
+    ]
+
+    if (length(validos) > 0) {
+
+      return(
+        validos[
+          which.min(abs(validos - perfil$lambda_hat))
+        ]
+      )
+
+    }
+
+    # Si no hay candidato habitual dentro del intervalo,
+    # se conserva el máximo de la grilla, redondeado.
+    return(round(perfil$lambda_hat, 2))
+
+  }
+
+  # Si no se pudo certificar un intervalo cerrado,
+  # se devuelve el máximo de la grilla como resultado provisional.
+  round(perfil$lambda_hat, 2)
+}
+
+# Selección de lambda para la serie 2.
+# Si el perfil no permite una decisión clara,
+# se conserva provisionalmente la escala original.
+if (
+  perfil_s2$intervalo_valido &&
+  !perfil_s2$intervalo_abierto
+) {
+
+  lambda_s2_elegido <- seleccionar_lambda(perfil_s2)
+
+} else {
+
+  lambda_s2_elegido <- 1
+
+}
+
+# Selección de lambda para la serie 3.
+lambda_s3_elegido <- seleccionar_lambda(perfil_s3)
+
+# Función para presentar los intervalos.
+formatear_ic <- function(perfil) {
+
+  if (
+    !perfil$intervalo_valido ||
+    !all(is.finite(perfil$intervalo_95))
+  ) {
+
+    return("No se pudo certificar un intervalo cerrado")
+
+  }
+
+  texto <- paste0(
+    "[",
+    round(perfil$intervalo_95[1], 3),
+    ", ",
+    round(perfil$intervalo_95[2], 3),
+    "]"
+  )
+
+  if (perfil$intervalo_abierto) {
+    texto <- paste0(texto, " (truncado por la grilla)")
+  }
+
+  texto
+}
+
+# Tabla final de resultados.
+resumen_boxcox <- data.frame(
+  Serie = c(1, 2, 3),
+  Modelo = c(
+    "No aplica",
+    perfil_s2$modelo,
+    perfil_s3$modelo
+  ),
+  Lambda_estimado = c(
+    NA,
+    perfil_s2$lambda_hat,
+    perfil_s3$lambda_hat
+  ),
+  IC95 = c(
+    "No aplica",
+    formatear_ic(perfil_s2),
+    formatear_ic(perfil_s3)
+  ),
+  Lambda_elegido = c(
+    NA,
+    lambda_s2_elegido,
+    lambda_s3_elegido
+  )
+)
+
+knitr::kable(
+  resumen_boxcox,
+  digits = 4,
+  caption = "Resumen de los perfiles y las decisiones de transformación."
+)
+```
+
+Para la segunda serie, el perfil no permite identificar un intervalo cerrado, se conserva provisionalmente $\lambda=1$. Esta elección equivale a mantener la escala original salvo por un desplazamiento constante, pero no debe interpretarse como una estimación precisa del parámetro.
+
+Para la tercera serie, se selecciona el valor interpretable más próximo al máximo del perfil cuando este pertenece al intervalo de confianza.
+
+## Interpretación de las series transformadas y sus primeras diferencias
+
+Una vez seleccionadas las transformaciones, es necesario interpretar qué representa la serie transformada y qué significado tiene su primera diferencia en las unidades del problema.
+
+La primera diferencia de una serie transformada se define como:
+
+$$
+\nabla g(Z_t)=g(Z_t)-g(Z_{t-1}).
+$$
+
+### Serie 1. Anomalía de la temperatura del agua cruda
+
+Para la primera serie se conserva la escala original, debido a la presencia de valores negativos y nulos. Por tanto:
+
+$$
+g(Z_t)=Z_t.
+$$
+
+La serie transformada representa la anomalía semanal de la temperatura del agua cruda en la bocatoma, medida en grados Celsius.
+
+Su primera diferencia es:
+
+$$
+\nabla g(Z_t)=Z_t-Z_{t-1}.
+$$
+
+Esta cantidad representa el cambio de la anomalía de temperatura entre dos semanas consecutivas, también medido en grados Celsius.
+
+### Serie 2. Nivel medio anual de la laguna de Celeste
+
+Para la segunda serie, cuando se elige $\lambda=1$, la transformación de Box-Cox es:
+
+$$
+g(Z_t)=Z_t-1.
+$$
+
+Esta transformación conserva la escala original, salvo por un desplazamiento constante.
+
+Su primera diferencia es:
+
+$$
+\nabla g(Z_t)
+=
+(Z_t-1)-(Z_{t-1}-1)
+=
+Z_t-Z_{t-1}.
+$$
+
+Esta cantidad representa el cambio del nivel medio de la laguna entre dos años consecutivos, medido en metros. El desplazamiento constante desaparece al diferenciar.
+
+### Serie 3. Reclamos por facturación
+
+Para la tercera serie se utiliza el valor de $\lambda$ seleccionado a partir del intervalo de confianza del perfil.
+
+La transformación general es:
+
+$$
+g_\lambda(Z_t)=
+\frac{Z_t^\lambda-1}{\lambda},
+\qquad \lambda\neq 0.
+$$
+
+Cuando $\lambda=0$, la transformación corresponde al logaritmo:
+
+$$
+g_0(Z_t)=\log(Z_t).
+$$
+
+Su primera diferencia, para $\lambda\neq 0$, es:
+
+$$
+\nabla g_\lambda(Z_t)
+=
+\frac{Z_t^\lambda-Z_{t-1}^\lambda}{\lambda}.
+$$
+
+Si el parámetro seleccionado es $\lambda=0.5$, la transformación corresponde a:
+
+$$
+g(Z_t)=2(\sqrt{Z_t}-1).
+$$
+
+En ese caso, la primera diferencia es:
+
+$$
+\nabla g(Z_t)
+=
+2(\sqrt{Z_t}-\sqrt{Z_{t-1}}).
+$$
+
+Para cambios pequeños, mediante una aproximación de primer orden:
+
+$$
+\nabla g(Z_t)
+\approx
+\frac{Z_t-Z_{t-1}}{\sqrt{Z_{t-1}}}.
+$$
+
+Por tanto, la primera diferencia aproxima el cambio mensual en el número de reclamos, ajustado por el nivel de reclamos del mes anterior.
+
+#### Construcción de las series transformadas
+
+Finalmente, se construyen las series transformadas que se utilizarán en la siguiente sección para estudiar el orden de integración.
+
+```{r construir-series-transformadas}
+# Serie 1: conservar la escala original.
+g_serie_1 <- series[[1]]$valor
+
+# Serie 2: aplicar la transformación seleccionada.
+g_serie_2 <- boxcox_tr(
+  series[[2]]$valor,
+  lambda_s2_elegido
+)
+
+# Serie 3: aplicar la transformación seleccionada.
+g_serie_3 <- boxcox_tr(
+  series[[3]]$valor,
+  lambda_s3_elegido
+)
+
+# Organizar las series transformadas.
+series_transformadas <- list(
+  g_serie_1,
+  g_serie_2,
+  g_serie_3
+)
+
+# Verificar longitudes y valores.
+tabla_transformadas <- data.frame(
+  Serie = 1:3,
+  Observaciones_originales = sapply(series, nrow),
+  Observaciones_transformadas =
+    sapply(series_transformadas, length),
+  Minimo_transformado =
+    sapply(series_transformadas, min),
+  Maximo_transformado =
+    sapply(series_transformadas, max),
+  Lambda_elegido = c(
+    NA,
+    lambda_s2_elegido,
+    lambda_s3_elegido
+  )
+)
+
+knitr::kable(
+  tabla_transformadas,
+  digits = 4,
+  caption = "Verificación de las series transformadas."
+)
+```
+
+En síntesis, las transformaciones seleccionadas permiten trabajar con una escala apropiada para cada serie antes de estudiar su estacionariedad en media y determinar el orden de integración en la siguiente sección.
+
+# Orden de integración
+
+El análisis del orden de integración se realiza sobre las series transformadas seleccionadas en la sección anterior. El objetivo es determinar cuántas diferencias son necesarias para obtener una serie estacionaria, evitando diferenciar excesivamente.
+
+Para ello se estudian las varianzas, las autocorrelaciones muestrales, las funciones de autocorrelación y las pruebas aumentadas de Dickey-Fuller. Finalmente, se evalúa la necesidad de incluir una constante en las series diferenciadas.
+
+## Análisis de varianzas y autocorrelaciones
+
+Se construyen tres versiones de cada serie transformada:
+
+- La serie en niveles, \(g(Z_t)\).
+- Su primera diferencia, \(\nabla g(Z_t)\).
+- Su segunda diferencia, \(\nabla^2 g(Z_t)\).
+
+La primera diferencia se define como:
+
+$$
+\nabla g(Z_t)=g(Z_t)-g(Z_{t-1}).
+$$
+
+La segunda diferencia corresponde a:
+
+$$
+\nabla^2 g(Z_t)
+=
+\nabla g(Z_t)-\nabla g(Z_{t-1}).
+$$
+
+Para cada versión se calcula la varianza muestral y la autocorrelación de primer orden, denotada por \(r_1\). También se examinan sus funciones de autocorrelación muestrales.
+
+La varianza permite comparar la dispersión de las distintas versiones de la serie. Por su parte, \(r_1\) y la ACF permiten estudiar la persistencia temporal y determinar si la dependencia disminuye después de diferenciar.
+
+### Cálculos de las diferencias
+
+Se utilizan las funciones `diferencias_serie()` y `resumen_diferencias()` implementadas en el archivo `02-integracion.R`.
+
+```{r preparar-integracion, include=FALSE}
+# Cargar las funciones de integración.
+source(file.path(carpeta_R, "02-integracion.R"))
+
+# Verificar que existan las series transformadas del punto anterior.
+if (!exists("series_transformadas")) {
+  stop(
+    "No existen las series transformadas. ",
+    "Ejecuta primero los bloques correspondientes al punto de Box-Cox."
+  )
+}
+
+# Verificar que sean tres series numéricas.
+if (
+  length(series_transformadas) != 3 ||
+  !all(vapply(series_transformadas, is.numeric, logical(1)))
+) {
+  stop("Las series transformadas no tienen la estructura esperada.")
+}
+
+# Calcular los resúmenes de niveles y diferencias.
+resultados_integracion <- lapply(
+  series_transformadas,
+  resumen_diferencias
+)
+
+names(resultados_integracion) <- paste0(
+  "Serie ",
+  seq_along(series_transformadas)
+)
+```
+
+### Tabla de varianzas y autocorrelaciones
+
+Se construye una tabla que contiene la varianza muestral, el número de observaciones y la autocorrelación de primer orden de cada versión de las tres series.
+
+```{r tabla-varianzas-integracion}
+# Unir los resultados de las tres series.
+tabla_integracion <- do.call(
+  rbind,
+  lapply(seq_along(resultados_integracion), function(i) {
+
+    tabla <- resultados_integracion[[i]]$resumen
+
+    data.frame(
+      Serie = paste("Serie", i),
+      Transformacion = tabla$serie,
+      Observaciones = tabla$T,
+      Varianza = tabla$varianza,
+      r1 = tabla$r1
+    )
+  })
+)
+
+# Mostrar resultados.
+knitr::kable(
+  tabla_integracion,
+  digits = 4,
+  caption = "Varianzas muestrales y autocorrelaciones de primer orden de las series transformadas y sus diferencias."
+)
+```
+
+La regla de la varianza mínima sugiere seleccionar el menor número de diferencias que permita estabilizar la serie. Sin embargo, esta regla no debe utilizarse de manera aislada: también es necesario examinar la forma de la ACF y las pruebas de raíz unitaria.
+
+### Funciones de autocorrelación muestrales
+
+Se presentan las ACF de los niveles, las primeras diferencias y las segundas diferencias de cada serie.
+
+El número máximo de rezagos se establece mediante:
+
+$$
+m=\min\left(24,\left\lfloor\frac{T}{4}\right\rfloor\right).
+$$
+
+Esta elección permite examinar la dependencia temporal utilizando una cantidad de rezagos proporcional al tamaño de la muestra, con un límite de 24.
+
+```{r generar-acf-integracion, include=FALSE}
+# Función para generar las ACF de las tres versiones de una serie.
+grafico_acf_integracion <- function(z, nombre, archivo) {
+
+  diferencias <- diferencias_serie(z)
+
+  series_acf <- list(
+    "Serie transformada" = diferencias$d0,
+    "Primera diferencia" = diferencias$d1,
+    "Segunda diferencia" = diferencias$d2
+  )
+
+  grDevices::png(
+    filename = archivo,
+    width = 1500,
+    height = 1500,
+    res = 140
+  )
+
+  on.exit(grDevices::dev.off(), add = TRUE)
+
+  op <- graphics::par(
+    mfrow = c(3, 1),
+    mar = c(4, 4, 3, 1)
+  )
+
+  for (nombre_acf in names(series_acf)) {
+
+    x <- series_acf[[nombre_acf]]
+
+    maximo <- min(
+      24,
+      floor(length(z) / 4),
+      length(x) - 1
+    )
+
+    acf_obj <- stats::acf(
+      x,
+      lag.max = maximo,
+      plot = FALSE,
+      demean = TRUE
+    )
+
+    graphics::plot(
+      acf_obj,
+      main = paste(nombre_acf, "-", nombre),
+      xlab = "Rezago",
+      ylab = "Autocorrelación",
+      ci = 0.95
+    )
+  }
+
+  graphics::par(op)
+}
+
+# Generar una figura para cada serie.
+for (i in seq_along(series_transformadas)) {
+
+  grafico_acf_integracion(
+    z = series_transformadas[[i]],
+    nombre = nombres[i],
+    archivo = file.path(
+      "figs",
+      paste0("acf_integracion_serie_", i, ".png")
+    )
+  )
+}
+```
+
+**Serie 1. Análisis de autocorrelación**
+
+```{r acf-integracion-serie-1, echo=FALSE, fig.cap="ACF de la serie transformada, primera diferencia y segunda diferencia de la serie 1."}
+knitr::include_graphics(
+  file.path(raiz_proyecto, "figs", "acf_integracion_serie_1.png")
+)
+```
+
+**Serie 2. Análisis de autocorrelación**
+
+```{r acf-integracion-serie-2, echo=FALSE, fig.cap="ACF de la serie transformada, primera diferencia y segunda diferencia de la serie 2."}
+knitr::include_graphics(
+  file.path(raiz_proyecto, "figs", "acf_integracion_serie_2.png")
+)
+```
+
+**Serie 3. Análisis de autocorrelación**
+
+```{r acf-integracion-serie-3, echo=FALSE, fig.cap="ACF de la serie transformada, primera diferencia y segunda diferencia de la serie 3."}
+knitr::include_graphics(
+  file.path(raiz_proyecto, "figs", "acf_integracion_serie_3.png")
+)
+```
+
+### Interpretación de las varianzas y las ACF
+
+La interpretación de las tres series se realiza considerando conjuntamente la varianza, la autocorrelación de primer orden y la forma de las ACF.
+
+En una serie no estacionaria, la ACF suele mostrar una disminución lenta de las autocorrelaciones, lo cual indica persistencia temporal. Después de aplicar una diferenciación adecuada, se espera que la dependencia disminuya y que la ACF presente un comportamiento más compatible con una serie estacionaria.
+
+También es importante examinar la segunda diferencia. Si su varianza es mayor que la de la primera diferencia y aparece una autocorrelación negativa marcada en el primer rezago, esto puede indicar una diferenciación excesiva.
+
+Para comparar las tres versiones se calcula cuál tiene la varianza más pequeña:
+
+```{r comparacion-varianzas}
+# Calcular el número de diferencias asociado a la varianza mínima.
+tabla_minima_varianza <- do.call(
+  rbind,
+  lapply(seq_along(resultados_integracion), function(i) {
+
+    tabla <- resultados_integracion[[i]]$resumen
+
+    posicion <- which.min(tabla$varianza)
+
+    data.frame(
+      Serie = paste("Serie", i),
+      Varianza_niveles = tabla$varianza[1],
+      Varianza_primera_diferencia = tabla$varianza[2],
+      Varianza_segunda_diferencia = tabla$varianza[3],
+      r1_niveles = tabla$r1[1],
+      r1_primera_diferencia = tabla$r1[2],
+      r1_segunda_diferencia = tabla$r1[3],
+      Diferencias_varianza_minima = posicion - 1
+    )
+  })
+)
+
+knitr::kable(
+  tabla_minima_varianza,
+  digits = 4,
+  caption = "Comparación de las varianzas y autocorrelaciones para determinar el número de diferencias."
+)
+```
+
+La varianza mínima constituye un primer criterio para determinar el orden de integración. No obstante, la decisión definitiva se toma utilizando también las pruebas aumentadas de Dickey-Fuller que se desarrollan a continuación.
+
+## Pruebas aumentadas de Dickey-Fuller
+
+Las pruebas aumentadas de Dickey-Fuller permiten evaluar si una serie presenta una raíz unitaria. La hipótesis nula corresponde a la existencia de una raíz unitaria, mientras que la alternativa indica estacionariedad bajo la especificación determinista seleccionada.
+
+La regresión general de la prueba ADF es:
+
+$$
+\Delta Y_t =
+\alpha+\beta t+\gamma Y_{t-1}
++\sum_{j=1}^{p}\delta_j\Delta Y_{t-j}+a_t.
+$$
+
+La especificación determinista puede incluir:
+
+- Sin constante ni tendencia: `none`.
+- Con constante: `drift`.
+- Con constante y tendencia lineal: `trend`.
+
+El estadístico de prueba se calcula como:
+
+$$
+\tau=\frac{\hat{\gamma}}{SE(\hat{\gamma})}.
+$$
+
+Bajo la hipótesis nula, este estadístico no sigue una distribución t de Student convencional. Por esta razón, se utilizan los valores críticos específicos de Dickey-Fuller correspondientes a cada especificación determinista.
+
+### Especificación determinista y selección de rezagos
+
+De acuerdo con la lectura de los gráficos temporales, se utilizan las siguientes especificaciones:
+
+- Serie 1: constante y tendencia, debido a su evolución ascendente.
+- Serie 2: constante, para evaluar la presencia de una raíz unitaria con deriva.
+- Serie 3: constante y tendencia, debido a su crecimiento sostenido.
+
+Para las primeras diferencias se utiliza una especificación con constante. Para las segundas diferencias se utiliza una especificación sin constante ni tendencia.
+
+Los rezagos de las regresiones ADF se seleccionan mediante el criterio BIC, utilizando la misma muestra para comparar los órdenes candidatos. Se consideran como máximo ocho rezagos, sujetos al tamaño de cada serie.
+
+La estrategia de evaluación es secuencial: primero se aplica la prueba a la serie transformada; si no se rechaza la hipótesis nula, se aplica a la primera diferencia; si tampoco se rechaza, se evalúa la segunda diferencia.
+
+### Ejecución de las pruebas ADF
+
+Se utilizan las funciones `seleccionar_rezagos_adf()`, `adf_propio()` y `verificar_adf_urca()` del archivo `02-integracion.R`.
+
+```{r preparar-adf, include=FALSE}
+# Cargar las funciones de integración.
+source(file.path(carpeta_R, "02-integracion.R"))
+
+# Verificar las series transformadas.
+if (!exists("series_transformadas")) {
+  stop("Primero se deben ejecutar las transformaciones del punto anterior.")
+}
+
+# Verificar la disponibilidad del paquete urca.
+if (!requireNamespace("urca", quietly = TRUE)) {
+  stop(
+    "Se requiere el paquete urca. ",
+    "Instálalo mediante install.packages('urca')."
+  )
+}
+
+# Especificaciones deterministas para las series en niveles.
+tipos_nivel <- c(
+  "trend",
+  "drift",
+  "trend"
+)
+
+# Especificaciones para las primeras diferencias.
+tipos_primera_diferencia <- c(
+  "drift",
+  "drift",
+  "drift"
+)
+
+# Especificaciones para las segundas diferencias.
+tipos_segunda_diferencia <- c(
+  "none",
+  "none",
+  "none"
+)
+
+# Nombres de las series.
+nombres_adf <- paste("Serie", 1:3)
+```
+
+La siguiente función realiza la selección de rezagos, estima la prueba ADF propia y la contrasta con la implementación de `urca::ur.df()`.
+
+```{r funcion-ejecutar-adf, include=FALSE}
+ejecutar_prueba_adf <- function(
+    z,
+    tipo,
+    nombre_serie,
+    nombre_etapa,
+    max_rezagos = 8,
+    criterio = "BIC"
+) {
+
+  # Limitar los rezagos de acuerdo con el tamaño de la muestra.
+  maximo <- min(
+    max_rezagos,
+    floor(length(z) / 5)
+  )
+
+  # Seleccionar los rezagos mediante BIC.
+  seleccion <- seleccionar_rezagos_adf(
+    y = z,
+    tipo = tipo,
+    max_rezagos = maximo,
+    criterio = criterio
+  )
+
+  # Estimar la prueba mediante la implementación propia.
+  prueba <- adf_propio(
+    y = z,
+    tipo = tipo,
+    rezagos = seleccion$rezagos
+  )
+
+  # Verificar con urca.
+  verificacion <- verificar_adf_urca(
+    y = z,
+    tipo = tipo,
+    rezagos = seleccion$rezagos
+  )
+
+  # Identificar la fila correspondiente de valores críticos.
+  fila_critica <- switch(
+    tipo,
+    none = "tau1",
+    drift = "tau2",
+    trend = "tau3"
+  )
+
+  valores_criticos <- verificacion$valores_criticos
+
+  if (
+    !fila_critica %in% rownames(valores_criticos) ||
+    !"5pct" %in% colnames(valores_criticos)
+  ) {
+    stop(
+      "No se encontraron valores críticos para la especificación ",
+      tipo
+    )
+  }
+
+  critico_5 <- as.numeric(
+    valores_criticos[fila_critica, "5pct"]
+  )
+
+  # Estadístico reportado por urca.
+  estadistico_urca <- as.numeric(
+    verificacion$comparacion$estadistico[2]
+  )
+
+  # Estadístico de la implementación propia.
+  estadistico_propio <- prueba$estadistico
+
+  # Contraste unilateral.
+  rechaza <- estadistico_urca < critico_5
+
+  decision <- if (rechaza) {
+    "Rechazar H0"
+  } else {
+    "No rechazar H0"
+  }
+
+  lectura <- if (rechaza) {
+    "Existe evidencia de estacionariedad bajo la especificación determinista seleccionada."
+  } else {
+    "La serie sigue siendo compatible con una raíz unitaria."
+  }
+
+  list(
+    serie = nombre_serie,
+    etapa = nombre_etapa,
+    tipo = tipo,
+    rezagos = seleccion$rezagos,
+    criterio = criterio,
+    tabla_seleccion = seleccion$tabla,
+    estadistico = estadistico_urca,
+    estadistico_propio = estadistico_propio,
+    critico_5 = critico_5,
+    decision = decision,
+    rechaza = rechaza,
+    lectura = lectura,
+    n = prueba$n,
+    verificacion = verificacion
+  )
+}
+```
+
+Se ejecuta la estrategia secuencial para cada una de las tres series.
+
+```{r ejecutar-adf-secuencial, include=FALSE}
+resultados_adf <- vector("list", 3)
+
+names(resultados_adf) <- nombres_adf
+
+for (i in seq_along(series_transformadas)) {
+
+  z <- series_transformadas[[i]]
+
+  # Construir las versiones de la serie.
+  etapas <- list(
+    niveles = z,
+    primera_diferencia = diff(z),
+    segunda_diferencia = diff(z, differences = 2)
+  )
+
+  tipos <- c(
+    tipos_nivel[i],
+    tipos_primera_diferencia[i],
+    tipos_segunda_diferencia[i]
+  )
+
+  resultados <- list()
+
+  # Primera prueba: niveles.
+  prueba_nivel <- ejecutar_prueba_adf(
+    z = etapas$niveles,
+    tipo = tipos[1],
+    nombre_serie = nombres_adf[i],
+    nombre_etapa = "Niveles"
+  )
+
+  resultados[[1]] <- prueba_nivel
+
+  if (prueba_nivel$rechaza) {
+
+    d_decidido <- 0
+
+  } else {
+
+    # Segunda prueba: primera diferencia.
+    prueba_d1 <- ejecutar_prueba_adf(
+      z = etapas$primera_diferencia,
+      tipo = tipos[2],
+      nombre_serie = nombres_adf[i],
+      nombre_etapa = "Primera diferencia"
+    )
+
+    resultados[[2]] <- prueba_d1
+
+    if (prueba_d1$rechaza) {
+
+      d_decidido <- 1
+
+    } else {
+
+      # Tercera prueba: segunda diferencia.
+      prueba_d2 <- ejecutar_prueba_adf(
+        z = etapas$segunda_diferencia,
+        tipo = tipos[3],
+        nombre_serie = nombres_adf[i],
+        nombre_etapa = "Segunda diferencia"
+      )
+
+      resultados[[3]] <- prueba_d2
+
+      if (prueba_d2$rechaza) {
+        d_decidido <- 2
+      } else {
+        d_decidido <- NA_integer_
+      }
+    }
+  }
+
+  resultados_adf[[i]] <- list(
+    etapas = resultados,
+    d = d_decidido
+  )
+}
+```
+
+### Resultados de las pruebas ADF
+
+La siguiente tabla presenta los resultados principales de las pruebas: especificación determinista, rezagos seleccionados, criterio de selección, estadístico observado, valor crítico y decisión.
+
+```{r tabla-resultados-adf}
+tabla_adf <- do.call(
+  rbind,
+  lapply(resultados_adf, function(resultado_serie) {
+
+    do.call(
+      rbind,
+      lapply(resultado_serie$etapas, function(resultado) {
+
+        data.frame(
+          Serie = resultado$serie,
+          Etapa = resultado$etapa,
+          Especificacion = resultado$tipo,
+          Rezagos = resultado$rezagos,
+          Criterio = resultado$criterio,
+          Estadistico = resultado$estadistico,
+          Critico_5 = resultado$critico_5,
+          Decision = resultado$decision,
+          Coincidencia_urca =
+            resultado$verificacion$coincide
+        )
+
+      })
+    )
+  })
+)
+
+knitr::kable(
+  tabla_adf,
+  digits = 4,
+  caption = "Resultados de las pruebas aumentadas de Dickey-Fuller."
+)
+```
+
+La columna `Coincidencia_urca` permite verificar si el estadístico de la implementación propia coincide con el obtenido mediante `urca::ur.df()`.
+
+También se presenta el número de rezagos seleccionado por BIC en cada prueba. Esta selección se realiza sobre una muestra común para que los modelos candidatos sean comparables.
+
+### Presentación de las pruebas con sus seis elementos
+
+Cada prueba se presenta considerando los seis elementos exigidos en las instrucciones del trabajo:
+
+1. Hipótesis nula y alternativa.
+2. Estadístico de prueba y distribución bajo la hipótesis nula.
+3. Región de rechazo al nivel del 5 %.
+4. Estadístico observado y valor p cuando exista.
+5. Decisión.
+6. Interpretación de la decisión.
+
+Para evitar que las tablas se conviertan en texto plano, se construye una única tabla con tres columnas: prueba, elemento y resultado.
+
+```{r tabla-seis-elementos-adf}
+crear_elementos_adf <- function(resultado) {
+
+  tipo <- resultado$tipo
+
+  interpretacion_alternativa <- switch(
+    tipo,
+    none = "Estacionariedad alrededor de una media cero.",
+    drift = "Estacionariedad alrededor de una media constante.",
+    trend = "Estacionariedad alrededor de una tendencia determinística."
+  )
+
+  elementos <- c(
+    paste0(
+      "H0: gamma = 0, existe una raíz unitaria. ",
+      "H1: gamma < 0, existe estacionariedad. ",
+      interpretacion_alternativa
+    ),
+
+    paste0(
+      "Tau = gamma estimado / error estándar de gamma. ",
+      "Bajo H0 se utiliza la distribución no estándar de Dickey-Fuller. ",
+      "Los valores críticos se obtienen de urca::ur.df(), ",
+      "con la especificación ", tipo, "."
+    ),
+
+    paste0(
+      "Rechazar H0 si Tau < ",
+      round(resultado$critico_5, 4),
+      " al nivel del 5 %."
+    ),
+
+    paste0(
+      "Estadístico observado = ",
+      round(resultado$estadistico, 4),
+      ". No se reporta un valor p convencional, ",
+      "porque la decisión se realiza con los valores críticos ",
+      "específicos de Dickey-Fuller."
+    ),
+
+    resultado$decision,
+
+    resultado$lectura
+  )
+
+  data.frame(
+    Prueba = paste(
+      resultado$serie,
+      "-",
+      resultado$etapa
+    ),
+    Elemento = c(
+      "Hipótesis nula y alternativa",
+      "Estadístico y distribución",
+      "Región de rechazo al 5 %",
+      "Estadístico observado y valor p",
+      "Decisión",
+      "Interpretación"
+    ),
+    Resultado = elementos
+  )
+}
+
+# Construir la tabla completa.
+tabla_seis_elementos_adf <- do.call(
+  rbind,
+  lapply(resultados_adf, function(resultado_serie) {
+
+    do.call(
+      rbind,
+      lapply(
+        resultado_serie$etapas,
+        crear_elementos_adf
+      )
+    )
+  })
+)
+
+knitr::kable(
+  tabla_seis_elementos_adf,
+  format = "pipe",
+  align = c("l", "l", "l"),
+  caption = "Presentación de las pruebas ADF con sus seis elementos."
+)
+```
+
+En las pruebas ADF no se reporta un valor p convencional porque el estadístico no sigue una distribución t de Student bajo la hipótesis nula. Por ello, la decisión se realiza comparando el estadístico observado con el valor crítico correspondiente a la especificación determinista.
+
+No rechazar la hipótesis nula no significa demostrar que la serie tiene una raíz unitaria. Significa que no existe evidencia suficiente para rechazarla con la información disponible.
+
+## Decisión sobre el número de diferencias
+
+La decisión sobre el orden de integración considera conjuntamente los siguientes criterios:
+
+- El comportamiento de la varianza en niveles, primeras diferencias y segundas diferencias.
+- La autocorrelación de primer orden y la forma de las ACF.
+- Los resultados secuenciales de las pruebas aumentadas de Dickey-Fuller.
+
+El orden de integración se determina tomando la menor cantidad de diferencias para la cual se obtiene evidencia de estacionariedad.
+
+```{r tabla-decision-integracion}
+tabla_decision_integracion <- data.frame(
+  Serie = nombres_adf,
+  d_ADF = sapply(
+    resultados_adf,
+    function(x) x$d
+  ),
+  d_varianza_minima =
+    tabla_minima_varianza$Diferencias_varianza_minima
+)
+
+knitr::kable(
+  tabla_decision_integracion,
+  digits = 0,
+  caption = "Comparación entre el orden sugerido por las pruebas ADF y el criterio de varianza mínima."
+)
+```
+
+La regla de la varianza mínima constituye un criterio complementario, no una decisión automática. Se debe seleccionar la menor cantidad de diferencias que permita obtener estacionariedad, evitando diferenciar excesivamente la serie.
+
+### Tendencia determinística y tendencia estocástica
+
+Es importante distinguir entre una serie estacionaria alrededor de una tendencia determinística y una serie que presenta una tendencia estocástica.
+
+En una serie estacionaria alrededor de una recta, el comportamiento puede representarse como:
+
+$$
+g(Z_t)=\beta_0+\beta_1t+W_t,
+$$
+
+donde \(W_t\) es estacionario.
+
+En este caso, la tendencia se elimina mediante una regresión:
+
+$$
+\widehat{g(Z_t)}
+=
+\hat{\beta}_0+\hat{\beta}_1t.
+$$
+
+Después se obtienen los residuos:
+
+$$
+W_t=g(Z_t)-\hat{\beta}_0-\hat{\beta}_1t.
+$$
+
+En cambio, si existe una tendencia estocástica, la serie acumula los efectos de los choques y se requiere diferenciarla:
+
+$$
+\nabla g(Z_t)=g(Z_t)-g(Z_{t-1}).
+$$
+
+La diferencia entre estos dos casos es importante para interpretar los choques. En una serie estacionaria alrededor de una tendencia determinística, los choques tienen efectos transitorios y la serie vuelve a fluctuar alrededor de su tendencia. En una serie integrada, los choques pueden tener efectos permanentes sobre el nivel.
+
+Cuando una serie es estacionaria alrededor de una recta, diferenciarla innecesariamente puede generar una autocorrelación negativa de primer orden y una estructura de promedio móvil inducida por la sobrediferenciación.
+
+### Construcción de las series estacionarias
+
+A partir del orden de integración seleccionado, se construye la serie estacionaria \(W_t\) que será utilizada en la sección de identificación.
+
+```{r construir-series-estacionarias}
+# Crear listas para las series estacionarias y las tendencias.
+series_W <- vector("list", 3)
+tendencias_estimadas <- vector("list", 3)
+
+names(series_W) <- nombres_adf
+
+for (i in seq_along(series_transformadas)) {
+
+  z <- series_transformadas[[i]]
+
+  d <- resultados_adf[[i]]$d
+
+  if (is.na(d)) {
+
+    # No se encontró estacionariedad hasta la segunda diferencia.
+    series_W[i] <- list(
+      rep(NA_real_, length(z))
+    )
+
+    tendencias_estimadas[i] <- list(NULL)
+
+    next
+  }
+
+  if (d == 0) {
+
+    # Serie estacionaria alrededor de una tendencia determinística.
+    if (tipos_nivel[i] == "trend") {
+
+      tiempo <- seq_along(z)
+
+      ajuste_tendencia <- stats::lm(
+        z ~ tiempo
+      )
+
+      series_W[[i]] <- stats::residuals(
+        ajuste_tendencia
+      )
+
+      tendencias_estimadas[[i]] <- ajuste_tendencia
+
+    } else {
+
+      # Serie estacionaria alrededor de una constante.
+      series_W[[i]] <- z - mean(z)
+
+      tendencias_estimadas[[i]] <- NULL
+    }
+
+  } else if (d == 1) {
+
+    series_W[[i]] <- diff(z)
+
+    tendencias_estimadas[[i]] <- NULL
+
+  } else {
+
+    series_W[[i]] <- diff(
+      z,
+      differences = 2
+    )
+
+    tendencias_estimadas[[i]] <- NULL
+  }
+}
+
+# Resumen de las series resultantes.
+tabla_W <- data.frame(
+  Serie = nombres_adf,
+  Diferencias = sapply(
+    resultados_adf,
+    function(x) x$d
+  ),
+  Observaciones_W = sapply(
+    series_W,
+    function(x) sum(is.finite(x))
+  ),
+  Media_W = sapply(
+    series_W,
+    function(x) {
+      if (all(is.finite(x))) mean(x) else NA_real_
+    }
+  ),
+  Varianza_W = sapply(
+    series_W,
+    function(x) {
+      if (all(is.finite(x))) var(x) else NA_real_
+    }
+  )
+)
+
+knitr::kable(
+  tabla_W,
+  digits = 4,
+  caption = "Resumen de las series estacionarias resultantes."
+)
+```
+
+Si una serie no alcanza estacionariedad en ninguna de las tres etapas, se deja identificada como pendiente de revisión. No se debe utilizar una segunda diferencia automáticamente sin revisar nuevamente la especificación determinista y la evidencia de las pruebas.
+
+## Decisión sobre la constante de las series diferenciadas
+
+Para las series que requieren diferenciación se evalúa si la media de la serie diferenciada es significativamente diferente de cero.
+
+Se utiliza una prueba t para la media, con un error estándar robusto que tiene en cuenta la autocorrelación de la serie. Para ello se calcula una varianza de largo plazo mediante ponderaciones de Bartlett.
+
+La hipótesis nula y alternativa son:
+
+$$
+H_0:\theta_0=0
+$$
+
+$$
+H_1:\theta_0\neq 0.
+$$
+
+La media muestral de la serie diferenciada se utiliza para contrastar la presencia de una deriva distinta de cero:
+
+$$
+\hat{\theta}_0=\bar W.
+$$
+
+El estadístico se construye como:
+
+$$
+t=
+\frac{\bar W}{SE_{\mathrm{HAC}}(\bar W)}.
+$$
+
+La varianza de largo plazo se calcula mediante:
+
+$$
+\widehat{\Omega}
+=
+\hat{\gamma}_0+
+2\sum_{k=1}^{L}
+\left(1-\frac{k}{L+1}\right)\hat{\gamma}_k.
+$$
+
+Por tanto:
+
+$$
+SE_{\mathrm{HAC}}(\bar W)
+=
+\sqrt{\frac{\widehat{\Omega}}{n}}.
+$$
+
+Se utiliza la regla:
+
+$$
+L=
+\left\lfloor
+4\left(\frac{n}{100}\right)^{2/9}
+\right\rfloor.
+$$
+
+### Cálculo del error estándar HAC
+
+La siguiente función calcula manualmente la varianza de largo plazo con ponderaciones de Bartlett y el error estándar robusto de la media.
+
+```{r funcion-hac}
+error_hac_media <- function(x) {
+
+  x <- as.numeric(x)
+
+  if (
+    length(x) < 5 ||
+    any(!is.finite(x))
+  ) {
+    stop(
+      "La serie debe contener al menos cinco valores finitos."
+    )
+  }
+
+  n <- length(x)
+
+  media <- mean(x)
+
+  residuos <- x - media
+
+  # Selección del ancho de banda.
+  L <- floor(
+    4 * (n / 100)^(2 / 9)
+  )
+
+  # Autocovarianza de orden cero.
+  gamma_0 <- sum(residuos^2) / n
+
+  omega <- gamma_0
+
+  # Incorporar autocovarianzas con ponderaciones de Bartlett.
+  if (L > 0) {
+
+    for (k in seq_len(L)) {
+
+      gamma_k <- sum(
+        residuos[(k + 1):n] *
+          residuos[1:(n - k)]
+      ) / n
+
+      peso <- 1 - k / (L + 1)
+
+      omega <- omega + 2 * peso * gamma_k
+    }
+  }
+
+  if (!is.finite(omega) || omega <= 0) {
+    stop("La varianza HAC no es positiva y finita.")
+  }
+
+  # Error estándar robusto de la media.
+  se_hac <- sqrt(omega / n)
+
+  # Estadístico t.
+  estadistico <- media / se_hac
+
+  grados_libertad <- n - 1
+
+  critico <- stats::qt(
+    0.975,
+    df = grados_libertad
+  )
+
+  p_value <- 2 * stats::pt(
+    -abs(estadistico),
+    df = grados_libertad
+  )
+
+  list(
+    n = n,
+    media = media,
+    rezagos_HAC = L,
+    varianza_largo_plazo = omega,
+    error_estandar_HAC = se_hac,
+    estadistico = estadistico,
+    grados_libertad = grados_libertad,
+    critico = critico,
+    p_value = p_value,
+    rechaza = abs(estadistico) > critico
+  )
+}
+```
+
+### Resultados de la prueba sobre la constante
+
+La prueba se aplica únicamente a las series que requieren diferenciación. Cuando el orden de integración es uno, se utiliza la primera diferencia. Cuando el orden es dos, se utiliza la segunda diferencia.
+
+```{r resultados-constante}
+resultados_theta <- vector("list", 3)
+
+for (i in seq_along(series_W)) {
+
+  d <- resultados_adf[[i]]$d
+
+  if (is.na(d) || d == 0) {
+
+    resultados_theta[i] <- list(NULL)
+
+  } else {
+
+    resultados_theta[[i]] <- error_hac_media(
+      series_W[[i]]
+    )
+  }
+}
+
+# Identificar las series que requieren diferenciación.
+indices_diferenciados <- which(
+  sapply(
+    resultados_adf,
+    function(x) !is.na(x$d) && x$d > 0
+  )
+)
+
+if (length(indices_diferenciados) > 0) {
+
+  tabla_theta <- do.call(
+    rbind,
+    lapply(indices_diferenciados, function(i) {
+
+      resultado <- resultados_theta[[i]]
+
+      data.frame(
+        Serie = nombres_adf[i],
+        Diferencias = resultados_adf[[i]]$d,
+        n = resultado$n,
+        Media = resultado$media,
+        Rezagos_HAC = resultado$rezagos_HAC,
+        Error_estandar_HAC = resultado$error_estandar_HAC,
+        Estadistico_t = resultado$estadistico,
+        Grados_libertad = resultado$grados_libertad,
+        Critico_5 = resultado$critico,
+        Valor_p = resultado$p_value,
+        Decision = if (resultado$rechaza) {
+          "Rechazar H0"
+        } else {
+          "No rechazar H0"
+        }
+      )
+    })
+  )
+
+  knitr::kable(
+    tabla_theta,
+    digits = 4,
+    caption = "Pruebas de la media de las series diferenciadas con error estándar HAC."
+  )
+
+} else {
+
+  cat("Ninguna serie requirió diferenciación.")
+}
+```
+
+### Presentación de las pruebas sobre la constante
+
+Cada prueba se interpreta considerando los seis elementos exigidos para los contrastes de hipótesis.
+
+```{r tabla-seis-elementos-theta}
+crear_elementos_theta <- function(i) {
+
+  resultado <- resultados_theta[[i]]
+
+  data.frame(
+    Prueba = paste(
+      nombres_adf[i],
+      "- Constante"
+    ),
+    Elemento = c(
+      "Hipótesis nula y alternativa",
+      "Estadístico y distribución",
+      "Región de rechazo al 5 %",
+      "Estadístico observado y valor p",
+      "Decisión",
+      "Interpretación"
+    ),
+    Resultado = c(
+      "H0: theta0 = 0. H1: theta0 != 0.",
+
+      paste0(
+        "t = media / error estándar HAC. ",
+        "Se utiliza una referencia t aproximada con ",
+        resultado$grados_libertad,
+        " grados de libertad."
+      ),
+
+      paste0(
+        "Rechazar H0 si |t| > ",
+        round(resultado$critico, 4),
+        "."
+      ),
+
+      paste0(
+        "t observado = ",
+        round(resultado$estadistico, 4),
+        "; valor p = ",
+        format.pval(resultado$p_value, digits = 4)
+      ),
+
+      if (resultado$rechaza) {
+        "Rechazar H0."
+      } else {
+        "No rechazar H0."
+      },
+
+      if (resultado$rechaza) {
+
+        if (resultados_adf[[i]]$d == 1) {
+          "La media de la primera diferencia es significativamente distinta de cero. Existe evidencia de una deriva en la serie transformada."
+        } else {
+          "La media de la segunda diferencia es significativamente distinta de cero. Existe evidencia de un cambio medio en las primeras diferencias."
+        }
+
+      } else {
+
+        "No se encuentra evidencia suficiente para afirmar que la media de la serie diferenciada sea distinta de cero."
+      }
+    )
+  )
+}
+
+if (length(indices_diferenciados) > 0) {
+
+  tabla_seis_elementos_theta <- do.call(
+    rbind,
+    lapply(
+      indices_diferenciados,
+      crear_elementos_theta
+    )
+  )
+
+  knitr::kable(
+    tabla_seis_elementos_theta,
+    format = "pipe",
+    align = c("l", "l", "l"),
+    caption = "Presentación de las pruebas sobre la constante con sus seis elementos."
+  )
+}
+```
+
+### Interpretación de la constante en las unidades del problema
+
+La media de la serie diferenciada debe interpretarse de acuerdo con la transformación y la frecuencia de cada variable.
+
+- Para la anomalía de temperatura, la constante representa el cambio medio semanal de la anomalía, en grados Celsius por semana.
+- Para el nivel de la laguna, representa el cambio medio anual del nivel, en metros por año.
+- Para los reclamos, cuando se utiliza la transformación de Box-Cox, representa el cambio medio mensual en la escala transformada de los reclamos.
+
+Cuando se analiza una segunda diferencia, su media representa el cambio medio de las primeras diferencias, por lo que corresponde a una variación de segundo orden en la escala de la serie transformada.
+
+Si el contraste rechaza la hipótesis nula, existe evidencia de una media distinta de cero en la serie diferenciada. Si no se rechaza, no se encuentra evidencia suficiente para justificar una constante distinta de cero mediante este contraste.
+
+Las decisiones sobre el orden de integración y la constante se utilizarán para construir los modelos candidatos en la siguiente sección.
+
+# Identificación
+
+Sea \(W_t\) la serie estacionaria obtenida después de aplicar las transformaciones y decidir el orden de integración en las secciones anteriores. Esta serie corresponde a la primera diferencia de \(g(Z_t)\), a la segunda diferencia cuando se justifique o a los residuos de una tendencia determinística, según el resultado de cada serie.
+
+El objetivo de esta sección es identificar posibles estructuras autorregresivas (AR), de promedio móvil (MA) y mixtas (ARMA). Para ello se utilizan las funciones de autocorrelación muestral (ACF), autocorrelación parcial muestral (PACF) y autocorrelación extendida (EACF).
+
+## Funciones de autocorrelación ACF y PACF
+
+La ACF mide la correlación entre las observaciones de una serie y sus valores rezagados. Se define como:
+
+$$
+\rho(k)=
+\frac{\gamma(k)}{\gamma(0)},
+$$
+
+donde \(\gamma(k)\) representa la autocovarianza de orden \(k\).
+
+La PACF mide la relación propia entre \(W_t\) y \(W_{t-k}\), controlando los efectos de los rezagos intermedios.
+
+Las funciones ACF y PACF permiten proponer órdenes para los modelos AR y MA:
+
+- En un proceso AR(\(p\)), la PACF presenta un corte después del rezago \(p\), mientras que la ACF generalmente decae.
+- En un proceso MA(\(q\)), la ACF presenta un corte después del rezago \(q\), mientras que la PACF generalmente decae.
+- En un proceso ARMA(\(p,q\)), tanto la ACF como la PACF generalmente presentan decaimiento gradual.
+
+### Selección del número de rezagos
+
+Para cada serie se establece un número máximo de rezagos \(m\), definido mediante:
+
+$$
+m=\min\left(20,\left\lfloor\frac{n}{4}\right\rfloor\right),
+$$
+
+donde \(n\) representa el número de observaciones disponibles en la serie estacionaria.
+
+Esta elección permite analizar hasta veinte rezagos cuando el tamaño de muestra lo permite, evitando utilizar una cantidad excesiva de rezagos en muestras pequeñas.
+
+Para la interpretación gráfica se utilizan bandas de confianza aproximadas del 95 %:
+
+$$
+\pm\frac{1.96}{\sqrt{n}}.
+$$
+
+Estas bandas permiten identificar autocorrelaciones que se apartan de cero más allá de la variabilidad muestral esperada bajo la aproximación de ruido blanco.
+
+### Preparación de las series estacionarias
+
+Se utilizan las series \(W_t\) construidas en la sección anterior. Primero se verifica que todas tengan observaciones finitas y que el orden de integración haya sido determinado.
+
+```{r preparar-identificacion, include=FALSE}
+# Cargar las funciones de identificación.
+source(file.path(carpeta_R, "03-identificacion.R"))
+
+# Verificar que existan las series estacionarias.
+if (!exists("series_W")) {
+  stop(
+    "No existen las series W_t. ",
+    "Ejecuta primero la sección de orden de integración."
+  )
+}
+
+# Verificar que las tres series tengan observaciones finitas.
+if (length(series_W) != 3) {
+  stop("Se esperaban tres series estacionarias.")
+}
+
+for (i in seq_along(series_W)) {
+
+  if (
+    length(series_W[[i]]) < 10 ||
+    any(!is.finite(series_W[[i]]))
+  ) {
+    stop(
+      "La serie estacionaria ",
+      i,
+      " no tiene suficientes observaciones finitas. ",
+      "Revisa la decisión de integración."
+    )
+  }
+}
+
+# Verificar la disponibilidad de TSA para calcular la EACF.
+if (!requireNamespace("TSA", quietly = TRUE)) {
+  stop(
+    "Se requiere instalar el paquete TSA. ",
+    "Ejecuta install.packages('TSA') en la consola de R."
+  )
+}
+
+# Calcular el número máximo de rezagos para cada serie.
+rezagos_maximos <- sapply(
+  series_W,
+  function(z) {
+    min(20, floor(length(z) / 4))
+  }
+)
+
+# Calcular los resúmenes de identificación.
+resultados_identificacion <- lapply(
+  seq_along(series_W),
+  function(i) {
+
+    identificar_modelos(
+      z = series_W[[i]],
+      lag_max = rezagos_maximos[i]
+    )
+
+  }
+)
+
+names(resultados_identificacion) <- paste(
+  "Serie",
+  seq_along(series_W)
+)
+```
+
+### Gráficos de ACF y PACF
+
+A continuación se presentan las funciones de autocorrelación y autocorrelación parcial de las tres series estacionarias. Para cada serie se utiliza el número de rezagos definido anteriormente y se conservan las bandas de confianza del 95 %.
+
+```{r generar-graficos-acf-pacf, include=FALSE}
+# Función para guardar los gráficos ACF y PACF.
+guardar_graficos_identificacion <- function(z, nombre, lag_max, numero) {
+
+  archivo_acf <- file.path(
+    "figs",
+    paste0("acf_serie_", numero, ".png")
+  )
+
+  archivo_pacf <- file.path(
+    "figs",
+    paste0("pacf_serie_", numero, ".png")
+  )
+
+  # Gráfico ACF.
+  grDevices::png(
+    filename = archivo_acf,
+    width = 1400,
+    height = 900,
+    res = 140
+  )
+
+  tryCatch(
+    graficar_acf(
+      z = z,
+      lag_max = lag_max,
+      titulo = paste("ACF:", nombre)
+    ),
+    finally = grDevices::dev.off()
+  )
+
+  # Gráfico PACF.
+  grDevices::png(
+    filename = archivo_pacf,
+    width = 1400,
+    height = 900,
+    res = 140
+  )
+
+  tryCatch(
+    graficar_pacf(
+      z = z,
+      lag_max = lag_max,
+      titulo = paste("PACF:", nombre)
+    ),
+    finally = grDevices::dev.off()
+  )
+
+}
+
+# Generar los gráficos de las tres series.
+for (i in seq_along(series_W)) {
+
+  guardar_graficos_identificacion(
+    z = series_W[[i]],
+    nombre = nombres[i],
+    lag_max = rezagos_maximos[i],
+    numero = i
+  )
+
+}
+```
+
+### Primera serie: anomalía de la temperatura del agua cruda
+
+**Función de autocorrelación muestral (ACF)**
+
+```{r acf-serie-1, echo=FALSE}
+#| fig-cap: "Función de autocorrelación muestral de la serie estacionaria 1."
+#| out-width: "100%"
+
+knitr::include_graphics(
+  file.path(raiz_proyecto, "figs", "acf_serie_1.png")
+)
+```
+
+**Función de autocorrelación parcial muestral (PACF)**
+
+```{r pacf-serie-1, echo=FALSE}
+#| fig-cap: "Función de autocorrelación parcial muestral de la serie estacionaria 1."
+#| out-width: "100%"
+
+knitr::include_graphics(
+  file.path(raiz_proyecto, "figs", "pacf_serie_1.png")
+)
+```
+
+### Segunda serie: nivel medio anual de la laguna de Celeste
+
+**Función de autocorrelación muestral (ACF)**
+
+```{r acf-serie-2, echo=FALSE}
+#| fig-cap: "Función de autocorrelación muestral de la serie estacionaria 2."
+#| out-width: "100%"
+
+knitr::include_graphics(
+  file.path(raiz_proyecto, "figs", "acf_serie_2.png")
+)
+```
+
+**Función de autocorrelación parcial muestral (PACF)**
+
+```{r pacf-serie-2, echo=FALSE}
+#| fig-cap: "Función de autocorrelación parcial muestral de la serie estacionaria 2."
+#| out-width: "100%"
+
+knitr::include_graphics(
+  file.path(raiz_proyecto, "figs", "pacf_serie_2.png")
+)
+```
+
+### Tercera serie: reclamos por facturación
+
+**Función de autocorrelación muestral (ACF)**
+
+```{r acf-serie-3, echo=FALSE}
+#| fig-cap: "Función de autocorrelación muestral de la serie estacionaria 3."
+#| out-width: "100%"
+
+knitr::include_graphics(
+  file.path(raiz_proyecto, "figs", "acf_serie_3.png")
+)
+```
+
+**Función de autocorrelación parcial muestral (PACF)**
+
+```{r pacf-serie-3, echo=FALSE}
+#| fig-cap: "Función de autocorrelación parcial muestral de la serie estacionaria 3."
+#| out-width: "100%"
+
+knitr::include_graphics(
+  file.path(raiz_proyecto, "figs", "pacf_serie_3.png")
+)
+```
+
+### Resumen numérico de la ACF y PACF
+
+Además de los gráficos, se presenta una tabla con los valores muestrales de la ACF y PACF y se identifica cuáles superan las bandas aproximadas de confianza.
+
+```{r tabla-acf-pacf}
+# Construir las tablas para las tres series.
+tabla_acf_pacf <- do.call(
+  rbind,
+  lapply(seq_along(resultados_identificacion), function(i) {
+
+    resumen <- resultados_identificacion[[i]]$resumen
+
+    acf <- resumen$acf
+    pacf <- resumen$pacf
+
+    tabla <- merge(
+      acf,
+      pacf,
+      by = "rezago",
+      all = TRUE,
+      sort = TRUE
+    )
+
+    data.frame(
+      Serie = paste("Serie", i),
+      tabla,
+      Limite_95 = resumen$limite
+    )
+
+  })
+)
+
+knitr::kable(
+  tabla_acf_pacf,
+  digits = 4,
+  caption = "Valores muestrales de ACF y PACF y sus bandas aproximadas."
+)
+```
+
+Los rezagos que superan las bandas se identifican a continuación.
+
+```{r tabla-rezagos-significativos}
+# Obtener los rezagos que superan las bandas.
+tabla_rezagos_significativos <- do.call(
+  rbind,
+  lapply(seq_along(resultados_identificacion), function(i) {
+
+    resumen <- resultados_identificacion[[i]]$resumen
+
+    acf_sig <- resumen$acf$rezago[
+      resumen$acf$significativo
+    ]
+
+    pacf_sig <- resumen$pacf$rezago[
+      resumen$pacf$significativo
+    ]
+
+    data.frame(
+      Serie = paste("Serie", i),
+      Rezagos_ACF = if (length(acf_sig) == 0) {
+        "Ninguno"
+      } else {
+        paste(acf_sig, collapse = ", ")
+      },
+      Rezagos_PACF = if (length(pacf_sig) == 0) {
+        "Ninguno"
+      } else {
+        paste(pacf_sig, collapse = ", ")
+      },
+      Numero_rezagos_ACF = length(acf_sig),
+      Numero_rezagos_PACF = length(pacf_sig)
+    )
+
+  })
+)
+
+knitr::kable(
+  tabla_rezagos_significativos,
+  caption = "Rezagos de ACF y PACF que superan las bandas aproximadas del 95 %."
+)
+```
+
+La identificación no debe basarse exclusivamente en contar los rezagos significativos. También es necesario observar si las funciones presentan un patrón de corte o de decaimiento.
+
+En particular, una PACF que deja de presentar valores significativos después de cierto orden puede respaldar un modelo autorregresivo. Si el corte se observa en la ACF y la PACF presenta decaimiento, se considera un modelo de promedio móvil. Cuando ambas funciones muestran decaimiento gradual, se consideran modelos mixtos.
+
+## Función de autocorrelación extendida (EACF)
+
+La EACF permite estudiar estructuras ARMA mediante la identificación de regiones con autocorrelaciones extendidas no significativas.
+
+Su interpretación se basa en una tabla de símbolos:
+
+- El símbolo `o` representa un valor no significativo.
+- El símbolo `x` representa un valor significativo.
+
+Un patrón triangular de valores no significativos puede indicar un posible orden ARMA(\(p,q\)). El vértice de esta región permite proponer los órdenes autorregresivo \(p\) y de promedio móvil \(q\).
+
+La EACF se utiliza como herramienta complementaria a la ACF y la PACF. No determina automáticamente el modelo definitivo; sus resultados deben contrastarse con la estructura observada en las funciones muestrales y con la estimación posterior.
+
+### Cálculo de la EACF
+
+Se emplea la función `eacf_muestral()` desarrollada en el archivo `03-identificacion.R`, que utiliza el paquete `TSA`.
+
+```{r calcular-eacf, include=FALSE}
+# Calcular la EACF de las tres series estacionarias.
+resultados_eacf <- lapply(
+  series_W,
+  function(z) {
+    eacf_muestral(z)
+  }
+)
+
+names(resultados_eacf) <- paste(
+  "Serie",
+  seq_along(series_W)
+)
+```
+
+### Tabla EACF de la primera serie
+
+```{r eacf-serie-1}
+simbolo_eacf_1 <- resultados_eacf[[1]]$symbol
+
+tabla_eacf_1 <- as.data.frame(
+  simbolo_eacf_1[1:min(6, nrow(simbolo_eacf_1)),
+                 1:min(6, ncol(simbolo_eacf_1))]
+)
+
+tabla_eacf_1 <- data.frame(
+  AR = rownames(tabla_eacf_1),
+  tabla_eacf_1,
+  check.names = FALSE
+)
+
+names(tabla_eacf_1)[-1] <- paste0(
+  "MA(",
+  seq_len(ncol(tabla_eacf_1) - 1) - 1,
+  ")"
+)
+
+knitr::kable(
+  tabla_eacf_1,
+  caption = "Tabla EACF de la primera serie."
+)
+```
+
+### Tabla EACF de la segunda serie
+
+```{r eacf-serie-2}
+simbolo_eacf_2 <- resultados_eacf[[2]]$symbol
+
+tabla_eacf_2 <- as.data.frame(
+  simbolo_eacf_2[1:min(6, nrow(simbolo_eacf_2)),
+                 1:min(6, ncol(simbolo_eacf_2))]
+)
+
+tabla_eacf_2 <- data.frame(
+  AR = rownames(tabla_eacf_2),
+  tabla_eacf_2,
+  check.names = FALSE
+)
+
+names(tabla_eacf_2)[-1] <- paste0(
+  "MA(",
+  seq_len(ncol(tabla_eacf_2) - 1) - 1,
+  ")"
+)
+
+knitr::kable(
+  tabla_eacf_2,
+  caption = "Tabla EACF de la segunda serie."
+)
+```
+
+### Tabla EACF de la tercera serie
+
+```{r eacf-serie-3}
+simbolo_eacf_3 <- resultados_eacf[[3]]$symbol
+
+tabla_eacf_3 <- as.data.frame(
+  simbolo_eacf_3[1:min(6, nrow(simbolo_eacf_3)),
+                 1:min(6, ncol(simbolo_eacf_3))]
+)
+
+tabla_eacf_3 <- data.frame(
+  AR = rownames(tabla_eacf_3),
+  tabla_eacf_3,
+  check.names = FALSE
+)
+
+names(tabla_eacf_3)[-1] <- paste0(
+  "MA(",
+  seq_len(ncol(tabla_eacf_3) - 1) - 1,
+  ")"
+)
+
+knitr::kable(
+  tabla_eacf_3,
+  caption = "Tabla EACF de la tercera serie."
+)
+```
+
+## Identificación de modelos candidatos
+
+A partir de las ACF, PACF y EACF se proponen modelos candidatos para cada serie estacionaria.
+
+La estructura teórica que orienta la identificación es:
+
+| Modelo | Comportamiento de la ACF | Comportamiento de la PACF | Evidencia EACF |
+|---|---|---|---|
+| AR(\(p\)) | Decaimiento gradual | Corte después de \(p\) | Región no significativa compatible con \((p,0)\) |
+| MA(\(q\)) | Corte después de \(q\) | Decaimiento gradual | Región no significativa compatible con \((0,q)\) |
+| ARMA(\(p,q\)) | Decaimiento gradual | Decaimiento gradual | Región triangular no significativa compatible con \((p,q)\) |
+
+Para orientar la selección se examina el patrón de valores no significativos de la EACF. Se consideran órdenes pequeños, hasta tres para cada componente, con el objetivo de evitar especificaciones innecesariamente complejas.
+
+La siguiente función resume la presencia de la región no significativa de la EACF para cada combinación de órdenes. Esta puntuación es una ayuda exploratoria para organizar las alternativas y no sustituye la lectura visual de la tabla completa.
+
+```{r generar-candidatos-eacf, include=FALSE}
+# Función que evalúa los patrones diagonales de la EACF.
+evaluar_eacf <- function(simbolo, max_orden = 3) {
+
+  mat <- as.matrix(simbolo)
+
+  mat <- matrix(
+    as.character(mat),
+    nrow = nrow(mat),
+    ncol = ncol(mat),
+    dimnames = dimnames(mat)
+  )
+
+  max_p <- min(max_orden, nrow(mat) - 1)
+  max_q <- min(max_orden, ncol(mat) - 1)
+
+  ordenes <- expand.grid(
+    p = 0:max_p,
+    q = 0:max_q
+  )
+
+  # Excluir el modelo de ruido blanco.
+  ordenes <- subset(
+    ordenes,
+    p + q > 0
+  )
+
+  # Evaluar la continuidad de los símbolos no significativos.
+  calcular_puntaje <- function(p, q) {
+
+    numero <- min(
+      2,
+      nrow(mat) - 1 - p,
+      ncol(mat) - 1 - q
+    )
+
+    posiciones <- 0:numero
+
+    simbolos <- vapply(
+      posiciones,
+      function(k) {
+        tolower(
+          trimws(
+            as.character(mat[p + k + 1, q + k + 1])
+          )
+        )
+      },
+      character(1)
+    )
+
+    mean(simbolos == "o")
+  }
+
+  ordenes$puntaje <- mapply(
+    calcular_puntaje,
+    ordenes$p,
+    ordenes$q
+  )
+
+  ordenes$simbolo_inicial <- mapply(
+    function(p, q) {
+      as.character(mat[p + 1, q + 1])
+    },
+    ordenes$p,
+    ordenes$q
+  )
+
+  ordenes <- ordenes[
+    order(
+      -ordenes$puntaje,
+      ordenes$p + ordenes$q,
+      ordenes$p,
+      ordenes$q
+    ),
+  ]
+
+  rownames(ordenes) <- NULL
+
+  ordenes
+}
+
+# Construir los órdenes de referencia para cada serie.
+ordenes_eacf <- lapply(
+  resultados_eacf,
+  function(x) {
+    evaluar_eacf(
+      simbolo = x$symbol,
+      max_orden = 3
+    )
+  }
+)
+
+names(ordenes_eacf) <- paste(
+  "Serie",
+  seq_along(series_W)
+)
+```
+
+### Candidatos de la primera serie
+
+Para la primera serie se analizan conjuntamente los patrones de ACF, PACF y EACF. Se consideran prioritariamente los órdenes que presentan una región no significativa en la EACF y que corresponden a modelos de baja complejidad.
+
+```{r candidatos-serie-1}
+candidatos_serie_1 <- head(
+  ordenes_eacf[[1]],
+  5
+)
+
+candidatos_serie_1$Modelo <- ifelse(
+  candidatos_serie_1$p == 0,
+  paste0("MA(", candidatos_serie_1$q, ")"),
+  ifelse(
+    candidatos_serie_1$q == 0,
+    paste0("AR(", candidatos_serie_1$p, ")"),
+    paste0(
+      "ARMA(",
+      candidatos_serie_1$p,
+      ",",
+      candidatos_serie_1$q,
+      ")"
+    )
+  )
+)
+
+candidatos_serie_1$Prioridad <- ifelse(
+  seq_len(nrow(candidatos_serie_1)) <= 2,
+  "Candidato prioritario",
+  "No priorizado inicialmente"
+)
+
+knitr::kable(
+  candidatos_serie_1[
+    ,
+    c(
+      "Modelo",
+      "p",
+      "q",
+      "puntaje",
+      "simbolo_inicial",
+      "Prioridad"
+    )
+  ],
+  digits = 3,
+  caption = "Órdenes candidatos sugeridos por la EACF de la primera serie."
+)
+```
+
+### Candidatos de la segunda serie
+
+Para la segunda serie se utiliza el mismo procedimiento. La selección se apoya en la configuración de la EACF y se contrasta con la forma de las funciones ACF y PACF.
+
+```{r candidatos-serie-2}
+candidatos_serie_2 <- head(
+  ordenes_eacf[[2]],
+  5
+)
+
+candidatos_serie_2$Modelo <- ifelse(
+  candidatos_serie_2$p == 0,
+  paste0("MA(", candidatos_serie_2$q, ")"),
+  ifelse(
+    candidatos_serie_2$q == 0,
+    paste0("AR(", candidatos_serie_2$p, ")"),
+    paste0(
+      "ARMA(",
+      candidatos_serie_2$p,
+      ",",
+      candidatos_serie_2$q,
+      ")"
+    )
+  )
+)
+
+candidatos_serie_2$Prioridad <- ifelse(
+  seq_len(nrow(candidatos_serie_2)) <= 2,
+  "Candidato prioritario",
+  "No priorizado inicialmente"
+)
+
+knitr::kable(
+  candidatos_serie_2[
+    ,
+    c(
+      "Modelo",
+      "p",
+      "q",
+      "puntaje",
+      "simbolo_inicial",
+      "Prioridad"
+    )
+  ],
+  digits = 3,
+  caption = "Órdenes candidatos sugeridos por la EACF de la segunda serie."
+)
+```
+
+### Candidatos de la tercera serie
+
+Para la tercera serie se identifican los órdenes que presentan los patrones más compatibles con la región no significativa de la EACF. Estos resultados se contrastan con los rezagos destacados en la ACF y la PACF.
+
+```{r candidatos-serie-3}
+candidatos_serie_3 <- head(
+  ordenes_eacf[[3]],
+  5
+)
+
+candidatos_serie_3$Modelo <- ifelse(
+  candidatos_serie_3$p == 0,
+  paste0("MA(", candidatos_serie_3$q, ")"),
+  ifelse(
+    candidatos_serie_3$q == 0,
+    paste0("AR(", candidatos_serie_3$p, ")"),
+    paste0(
+      "ARMA(",
+      candidatos_serie_3$p,
+      ",",
+      candidatos_serie_3$q,
+      ")"
+    )
+  )
+)
+
+candidatos_serie_3$Prioridad <- ifelse(
+  seq_len(nrow(candidatos_serie_3)) <= 2,
+  "Candidato prioritario",
+  "No priorizado inicialmente"
+)
+
+knitr::kable(
+  candidatos_serie_3[
+    ,
+    c(
+      "Modelo",
+      "p",
+      "q",
+      "puntaje",
+      "simbolo_inicial",
+      "Prioridad"
+    )
+  ],
+  digits = 3,
+  caption = "Órdenes candidatos sugeridos por la EACF de la tercera serie."
+)
+```
+
+## Justificación de los candidatos y órdenes descartados
+
+La selección de los modelos candidatos considera conjuntamente la forma de las funciones ACF y PACF y la configuración de la EACF.
+
+La interpretación teórica permite distinguir los siguientes casos:
+
+- Si la PACF presenta un corte después del rezago \(p\), mientras la ACF decae gradualmente, se considera un modelo AR(\(p\)).
+- Si la ACF presenta un corte después del rezago \(q\), mientras la PACF decae gradualmente, se considera un modelo MA(\(q\)).
+- Si ambas funciones presentan decaimiento gradual y la EACF muestra una región triangular no significativa, se considera un modelo ARMA(\(p,q\)).
+
+Para cada serie se priorizan dos combinaciones de órdenes con una configuración favorable en la EACF. La tabla anterior también permite revisar las alternativas con menor prioridad, que no se seleccionan inicialmente debido a que presentan una configuración menos clara de valores no significativos o requieren órdenes más complejos.
+
+No se descarta un modelo únicamente porque alguna autocorrelación individual sea significativa. La identificación es una etapa exploratoria: los candidatos deben estimarse y validarse posteriormente, utilizando los criterios de información, la significancia de los parámetros y el comportamiento de los residuos.
+
+En consecuencia, los dos candidatos prioritarios de cada serie se utilizarán en la sección de estimación para comparar sus parámetros, errores estándar, varianzas de innovación y criterios de información.
+
+## Resumen de los modelos candidatos
+
+Finalmente, se consolida la identificación inicial de las tres series en una tabla que contiene los dos órdenes prioritarios sugeridos por la EACF.
+
+```{r resumen-candidatos}
+# Función para preparar los dos candidatos principales.
+resumir_candidatos <- function(ordenes, numero_serie) {
+
+  principales <- head(ordenes, 2)
+
+  modelos <- ifelse(
+    principales$p == 0,
+    paste0("MA(", principales$q, ")"),
+    ifelse(
+      principales$q == 0,
+      paste0("AR(", principales$p, ")"),
+      paste0(
+        "ARMA(",
+        principales$p,
+        ",",
+        principales$q,
+        ")"
+      )
+    )
+  )
+
+  data.frame(
+    Serie = paste("Serie", numero_serie),
+    Candidato = seq_len(nrow(principales)),
+    Modelo = modelos,
+    p = principales$p,
+    q = principales$q,
+    Puntaje_EACF = principales$puntaje
+  )
+}
+
+tabla_candidatos_final <- do.call(
+  rbind,
+  lapply(seq_along(ordenes_eacf), function(i) {
+
+    resumir_candidatos(
+      ordenes = ordenes_eacf[[i]],
+      numero_serie = i
+    )
+
+  })
+)
+
+knitr::kable(
+  tabla_candidatos_final,
+  digits = 3,
+  caption = "Resumen de los modelos candidatos identificados para las tres series."
+)
+```
+
+La identificación proporciona un conjunto inicial de alternativas para cada serie estacionaria. La selección definitiva no se realiza únicamente con las funciones muestrales, sino que se completa en la siguiente sección mediante la estimación por máxima verosimilitud exacta y la comparación de AIC y SBC.
