@@ -1,4 +1,3 @@
-
 # ============================================================
 # TRABAJO 2 - EQUIPO ST5NEW
 # Archivo: 01-transformacion.R
@@ -295,8 +294,8 @@ perfil_lambda <- function(
   
   z <- as.numeric(z)
   
-  if (any(!is.finite(z)) || any(z <= 0)) {
-    stop("Box-Cox no se aplica a valores no positivos.")
+  if (length(z) < 10 || any(!is.finite(z)) || any(z <= 0)) {
+    stop("Box-Cox requiere al menos 10 valores positivos y finitos.")
   }
   
   if (length(orden) != 3 || orden[2] != 0) {
@@ -317,39 +316,35 @@ perfil_lambda <- function(
   n <- length(z)
   tiempo <- seq_len(n)
   
-  # Construir componente determinista
+  # Escalar por la media geometrica para evitar potencias numericamente
+  # extremas cuando los datos tienen un nivel grande (por ejemplo, 2840).
+  # El jacobiano se ajusta para representar la transformacion respecto
+  # de los datos originales, no respecto de la serie escalada.
+  escala <- exp(mean(log(z)))
+  z_escalada <- z / escala
   
   if (tipo_determinista == "ninguna") {
-    
     xreg <- NULL
-    
   } else if (tipo_determinista == "constante") {
-    
     xreg <- matrix(
       1,
       nrow = n,
       ncol = 1,
       dimnames = list(NULL, "constante")
     )
-    
   } else {
-    
     xreg <- cbind(
       constante = rep(1, n),
       tendencia = tiempo
     )
   }
   
-  log_verosimilitud <- rep(
-    NA_real_,
-    length(lambda_grid)
-  )
+  log_verosimilitud <- rep(NA_real_, length(lambda_grid))
   
   for (i in seq_along(lambda_grid)) {
-    
     lambda <- lambda_grid[i]
     
-    z_transformada <- boxcox_tr(z, lambda)
+    z_transformada <- boxcox_tr(z_escalada, lambda)
     
     ajuste <- tryCatch(
       suppressWarnings(
@@ -365,14 +360,17 @@ perfil_lambda <- function(
     )
     
     if (!is.null(ajuste)) {
+      loglik <- as.numeric(stats::logLik(ajuste))
       
-      loglik <- as.numeric(
-        stats::logLik(ajuste)
+      # log |d g(z) / dz| para g(z) = BoxCox(z / escala, lambda)
+      jacobiano <- sum(
+        (lambda - 1) * log(z) - lambda * log(escala)
       )
       
-      jacobiano <- (lambda - 1) * sum(log(z))
-      
-      log_verosimilitud[i] <- loglik + jacobiano
+      candidato <- loglik + jacobiano
+      if (is.finite(candidato)) {
+        log_verosimilitud[i] <- candidato
+      }
     }
   }
   
@@ -380,45 +378,50 @@ perfil_lambda <- function(
     stop("No fue posible estimar el perfil de lambda.")
   }
   
-  # Lambda que maximiza el perfil
-  
   posicion_maximo <- which.max(log_verosimilitud)
-  
   lambda_hat <- lambda_grid[posicion_maximo]
-  
   maximo <- log_verosimilitud[posicion_maximo]
   
-  # Intervalo de confianza del 95 %
+  limite <- maximo - stats::qchisq(0.95, df = 1) / 2
   
-  limite <- maximo -
-    stats::qchisq(0.95, df = 1) / 2
-  
-  aceptados <- which(
+  # El IC se construye como el conjunto CONTIGUO que contiene el máximo.
+  # No se deben tomar el punto más cercano a izquierda/derecha (eso
+  # devolvería dos veces lambda_hat). Los NA dentro del intervalo impiden
+  # certificar sus extremos y se informan explícitamente.
+  aceptado <- is.finite(log_verosimilitud) &
     log_verosimilitud >= limite
-  )
   
-  izquierda <- max(
-    aceptados[aceptados <= posicion_maximo]
-  )
+  izquierda <- posicion_maximo
+  while (izquierda > 1 && aceptado[izquierda - 1]) {
+    izquierda <- izquierda - 1
+  }
   
-  derecha <- min(
-    aceptados[aceptados >= posicion_maximo]
-  )
+  derecha <- posicion_maximo
+  while (derecha < length(lambda_grid) && aceptado[derecha + 1]) {
+    derecha <- derecha + 1
+  }
   
-  ic_inferior <- lambda_grid[izquierda]
-  ic_superior <- lambda_grid[derecha]
+  hay_hueco_izquierda <- izquierda > 1 &&
+    is.na(log_verosimilitud[izquierda - 1])
+  hay_hueco_derecha <- derecha < length(lambda_grid) &&
+    is.na(log_verosimilitud[derecha + 1])
   
-  intervalo_abierto <- (
-    izquierda == 1 ||
-      derecha == length(lambda_grid)
-  )
+  intervalo_valido <- !hay_hueco_izquierda && !hay_hueco_derecha
+  
+  if (intervalo_valido) {
+    ic_inferior <- lambda_grid[izquierda]
+    ic_superior <- lambda_grid[derecha]
+  } else {
+    ic_inferior <- NA_real_
+    ic_superior <- NA_real_
+  }
+  
+  intervalo_abierto <- izquierda == 1 || derecha == length(lambda_grid)
   
   tabla_perfil <- data.frame(
     lambda = lambda_grid,
     log_verosimilitud = log_verosimilitud
   )
-  
-  # Generar grafico
   
   if (!dir.exists("figs")) {
     dir.create("figs")
@@ -455,17 +458,8 @@ perfil_lambda <- function(
     main = paste("Perfil Box-Cox:", nombre)
   )
   
-  graphics::abline(
-    h = limite,
-    lty = 2,
-    col = "red"
-  )
-  
-  graphics::abline(
-    v = lambda_hat,
-    lty = 2,
-    col = "blue"
-  )
+  graphics::abline(h = limite, lty = 2, col = "red")
+  graphics::abline(v = lambda_hat, lty = 2, col = "blue")
   
   return(list(
     lambda_hat = lambda_hat,
@@ -474,9 +468,17 @@ perfil_lambda <- function(
       superior = ic_superior
     ),
     intervalo_abierto = intervalo_abierto,
+    intervalo_valido = intervalo_valido,
+    motivo_intervalo = if (intervalo_valido) {
+      "Intervalo calculado en el componente conectado al maximo."
+    } else {
+      "No se puede certificar el intervalo: hay ajustes fallidos (NA) junto al componente que contiene el maximo."
+    },
     log_verosimilitud_maxima = maximo,
     limite_intervalo = limite,
+    cantidad_ajustes_fallidos = sum(is.na(log_verosimilitud)),
     tabla = tabla_perfil,
+    escala_geometrica = escala,
     modelo = paste(
       "ARMA",
       paste(orden[c(1, 3)], collapse = ","),
